@@ -1,0 +1,23 @@
+{
+    "mypy.dmypyExecutable": "${workspaceFolder}/.venv/Scripts/dmypy.exe",
+    "mypy.envFile": "",
+    "mypy.mypyExecutable": "${workspaceFolder}/.venv/Scripts/mypy.exe",
+    "mypy.runUsingActiveInterpreter": true,
+    "cSpell.words": [
+        "analyser",
+        "europepmc",
+        "openalex",
+        "pubmed",
+        "semanticscholar"
+    ],
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "workbench.editorAssociations": {
+        "*.copilotmd": "vscode.markdown.preview.editor",
+        "{git,gitlens,chat-editing-snapshot-text-model,copilot,git-graph,git-graph-3}:/**/*.ui": "default",
+        "file:/**/*.csv": "jupyter-data-wrangler"
+    }
+}

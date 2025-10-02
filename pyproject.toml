@@ -1,0 +1,93 @@
+[project]
+name = "llm_query_doc_analyser"
+version = "0.1.0"
+description = "CLI for scholarly literature enrichment, semantic filtering, and OA PDF retrieval."
+authors = [{ name = "Your Name", email = "your-email@example.com" }]
+requires-python = ">=3.11,<3.12"
+
+dependencies = [
+    "pandas",
+    "openpyxl",
+    "pydantic>=2",
+    "httpx[http2]",
+    "tenacity",
+    "python-dotenv",
+    "structlog",
+    "rapidfuzz",
+    "rank-bm25",
+    "sentence-transformers",
+    "faiss-cpu",
+    "pypdf",
+    "openai>=2.0.0",
+    "spacy>=3.8.7",
+    "nltk>=3.9.2",
+]
+
+[project.optional-dependencies]
+cli = ["typer"]
+
+[project.scripts]
+llm-query-doc-analyser = "llm_query_doc_analyser.cli:app"
+
+# --- Dev dependencies (PEP 735 dependency groups) ---
+[dependency-groups]
+# Use this with uv locally: `uv sync --group cli`
+cli = ["typer"]
+
+# include common groups via "dev"
+dev = [
+  { include-group = "lint" },
+  { include-group = "test" },
+  { include-group = "types" },
+]
+
+lint = [
+  "ruff",
+]
+
+test = [
+  "pytest",
+  "pytest-asyncio",
+  "pytest-cov",
+  "respx",
+]
+
+types = [
+  "mypy",
+]
+
+# --- uv settings ---
+[tool.uv]
+# Sync the "dev" group by default during `uv run` / `uv sync`
+default-groups = ["dev"]
+
+# (Optional) If you want to force packaging even without [build-system], you could set:
+# package = true
+
+# --- Build backend: uv_build ---
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
+
+# --- Tools configuration ---
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "UP", "B", "C4", "T20", "SIM", "RUF"]
+ignore = ["E501"]
+exclude = [".venv", "tests/data/fixtures"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+ignore_missing_imports = true
+exclude = 'tests/data/fixtures'
+plugins = []
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]

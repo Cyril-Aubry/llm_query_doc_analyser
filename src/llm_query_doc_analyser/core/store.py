@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS records (
     doi_raw TEXT,
     doi_norm TEXT,
     pub_date TEXT,
+    total_citations INTEGER,
+    citations_per_year REAL,
+    authors TEXT,
+    source_title TEXT,
     abstract_text TEXT,
     abstract_source TEXT,
     pmid TEXT,
@@ -135,16 +139,21 @@ def insert_record(rec: Record) -> int:
         cur.execute(
             """
             INSERT INTO records (
-                title, doi_raw, doi_norm, pub_date, abstract_text, abstract_source, pmid, pmcid, openalex_id, s2_paper_id, arxiv_id,
+                title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
+                abstract_text, abstract_source, pmid, pmcid, openalex_id, s2_paper_id, arxiv_id,
                 is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
                 rule_score, embed_score, llm_score, relevance_score, match_reasons, provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.title,
                 rec.doi_raw,
                 rec.doi_norm,
                 rec.pub_date,
+                rec.total_citations,
+                rec.citations_per_year,
+                rec.authors,
+                rec.source_title,
                 rec.abstract_text,
                 rec.abstract_source,
                 rec.pmid,
@@ -203,7 +212,8 @@ def upsert_record(rec: Record) -> int:
         cur.execute(
             """
             UPDATE records SET
-                title=?, doi_raw=?, pub_date=?, abstract_text=?, abstract_source=?, pmid=?, pmcid=?, openalex_id=?, s2_paper_id=?, arxiv_id=?,
+                title=?, doi_raw=?, pub_date=?, total_citations=?, citations_per_year=?, authors=?, source_title=?,
+                abstract_text=?, abstract_source=?, pmid=?, pmcid=?, openalex_id=?, s2_paper_id=?, arxiv_id=?,
                 is_oa=?, oa_status=?, license=?, oa_pdf_url=?, pdf_status=?, pdf_local_path=?, manual_url_publisher=?, manual_url_repository=?,
                 rule_score=?, embed_score=?, llm_score=?, relevance_score=?, match_reasons=?, provenance=?
             WHERE doi_norm=?
@@ -212,6 +222,10 @@ def upsert_record(rec: Record) -> int:
                 rec.title,
                 rec.doi_raw,
                 rec.pub_date,
+                rec.total_citations,
+                rec.citations_per_year,
+                rec.authors,
+                rec.source_title,
                 rec.abstract_text,
                 rec.abstract_source,
                 rec.pmid,
@@ -242,16 +256,21 @@ def upsert_record(rec: Record) -> int:
             cur.execute(
                 """
                 INSERT INTO records (
-                    title, doi_raw, doi_norm, pub_date, abstract_text, abstract_source, pmid, pmcid, openalex_id, s2_paper_id, arxiv_id,
+                    title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
+                    abstract_text, abstract_source, pmid, pmcid, openalex_id, s2_paper_id, arxiv_id,
                     is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
                     rule_score, embed_score, llm_score, relevance_score, match_reasons, provenance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.title,
                     rec.doi_raw,
                     rec.doi_norm,
                     rec.pub_date,
+                    rec.total_citations,
+                    rec.citations_per_year,
+                    rec.authors,
+                    rec.source_title,
                     rec.abstract_text,
                     rec.abstract_source,
                     rec.pmid,
@@ -539,6 +558,36 @@ def get_matched_records_by_filtering_query(filtering_query_id: int) -> list[Reco
         count=len(records),
     )
     return records
+
+
+def get_record_provenance(record_id: int) -> dict:
+    """Retrieve the provenance JSON for a specific record.
+
+    Args:
+        record_id: ID of the record in the records table
+
+    Returns:
+        A dictionary representing provenance (empty dict if none found)
+    """
+    log.debug("fetching_record_provenance", record_id=record_id)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT provenance FROM records WHERE id = ?", (record_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            log.info("provenance_not_found", record_id=record_id)
+            return {}
+        try:
+            prov = json.loads(row[0])
+            # Ensure values are dicts
+            if isinstance(prov, dict):
+                for k, v in list(prov.items()):
+                    if isinstance(v, str):
+                        prov[k] = {"raw": v}
+            return prov
+        except Exception as e:
+            log.error("provenance_parse_error", record_id=record_id, error=str(e))
+            return {}
 
 
 def insert_pdf_resolution(

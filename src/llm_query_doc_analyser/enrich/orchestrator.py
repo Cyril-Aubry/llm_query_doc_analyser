@@ -19,7 +19,7 @@ async def enrich_record(rec: Record, clients: dict[str, Any]) -> Record:
     Enrich a record with abstract and OA info, keeping provenance for each service.
     Precedence: S2 > Crossref > OpenAlex > EPMC/PubMed.
     """
-    log.debug("enrichment_started", doi=rec.doi_norm, title=rec.title[:100])
+    log.debug("enrichment_started", doi=rec.doi_norm, title=rec.title[:200])
     provenance = {}
     ARXIV_DOI_PATTERN = re.compile(r"arxiv:(\d{4}\.\d{4,5})(v\d+)?", re.IGNORECASE)
     # Set arxiv_id if DOI is arXiv

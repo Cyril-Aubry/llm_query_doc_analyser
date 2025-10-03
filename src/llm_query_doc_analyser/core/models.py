@@ -7,6 +7,14 @@ class Record(BaseModel):
     doi_raw: str | None = None
     doi_norm: str | None = None
     pub_date: str | None = None
+    
+    # Citation metrics
+    total_citations: int | None = None
+    citations_per_year: float | None = None
+    
+    # Bibliographic
+    authors: str | None = None
+    source_title: str | None = None
 
     # Enrichment
     abstract_text: str | None = None

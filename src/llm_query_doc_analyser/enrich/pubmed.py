@@ -1,8 +1,11 @@
+from typing import Any
+
 import httpx
-from typing import Tuple, Any
+
 from ..core.models import Record
 
-async def fetch_pubmed(rec: Record) -> Tuple[dict, Any]:
+
+async def fetch_pubmed(rec: Record) -> tuple[dict, Any]:
     """Fetch PubMed abstract by DOI using E-utilities."""
     if not rec.doi_norm:
         return {}, {}

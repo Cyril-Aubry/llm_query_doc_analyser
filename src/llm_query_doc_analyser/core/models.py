@@ -22,7 +22,6 @@ class Record(BaseModel):
 
     # External IDs
     pmid: str | None = None
-    pmcid: str | None = None
     openalex_id: str | None = None
     s2_paper_id: str | None = None
     arxiv_id: str | None = None

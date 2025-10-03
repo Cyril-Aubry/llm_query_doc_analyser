@@ -6,7 +6,7 @@ from ..core.models import Record
 
 
 async def fetch_europepmc(rec: Record) -> tuple[dict, Any]:
-    """Fetch Europe PMC abstract and full text URLs by DOI/PMID/PMCID."""
+    """Fetch Europe PMC abstract and full text URLs by DOI."""
     if not rec.doi_norm:
         return {}, {}
     url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:{rec.doi_norm}&format=json"

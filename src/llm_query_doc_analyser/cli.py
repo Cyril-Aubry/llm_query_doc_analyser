@@ -14,6 +14,7 @@ from .core.store import (
     create_filtering_query,
     get_matched_records_by_filtering_query,
     get_pdf_download_stats,
+    get_record_provenance,
     get_records,
     init_db,
     insert_pdf_download,
@@ -28,6 +29,7 @@ from .pdfs.download import download_pdf
 from .pdfs.resolve import resolve_pdf_candidates
 from .utils.files import rename_pdf_file
 from .utils.log import get_logger, setup_logging
+from .utils.provenance import formatted_provenance
 
 # Load environment variables from .env file
 load_dotenv()
@@ -44,13 +46,15 @@ app = typer.Typer()
 
 @app.callback()
 def callback(
-    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress console log output (logs still written to file)"),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", help="Suppress console log output (logs still written to file)"
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose (DEBUG) logging"),
 ):
     """Initialize application with structured logging."""
     # Determine log level
     log_level = "DEBUG" if verbose else os.getenv("LOG_LEVEL", "INFO")
-    
+
     # Setup logging with console output option
     console_output = not quiet
     _log_state["log_file"] = setup_logging(
@@ -59,7 +63,7 @@ def callback(
         console_output=console_output,
     )
     _log_state["logger"] = get_logger(__name__)
-    
+
     if console_output:
         _log_state["logger"].info(
             "application_started",
@@ -131,20 +135,37 @@ def export_records(records: list[Record], export_path, format="parquet"):
 
 
 @app.command()
+def provenance(record_id: int):
+    """Show provenance information for a record by ID."""
+    init_db()
+    prov = get_record_provenance(record_id)
+    out = formatted_provenance(prov)
+    typer.echo(out)
+
+
+@app.command()
 def filter(
     query: str = typer.Option(..., "--query", "-q", help="Query string for filtering records"),
     exclude: str = "",
     max_concurrent: int = typer.Option(10, help="Maximum concurrent API calls"),
-    export_path: Path | None = typer.Option(None, "--export", "-e", help="Optional export path for filtered records"),  # noqa: B008
+    export_path: Path | None = typer.Option(  # noqa: B008
+        None, "--export", "-e", help="Optional export path for filtered records"
+    ),
 ):
     """Filter records by querying OpenAI's LLM for relevance using async parallelized calls.
-    
+
     Results are stored in the database (filtering_queries and records_filterings tables).
     Optionally export filtered records to a file.
     """
     timestamp = datetime.now().isoformat()
-    log.info("filter_started", query=query, exclude=exclude, max_concurrent=max_concurrent, timestamp=timestamp)
-    
+    log.info(
+        "filter_started",
+        query=query,
+        exclude=exclude,
+        max_concurrent=max_concurrent,
+        timestamp=timestamp,
+    )
+
     # Retrieve OpenAI API key and model name from environment variables
     openai_api_key = os.getenv("OPENAI_API_KEY")
     model_name = os.getenv("OPENAI_MODEL")
@@ -157,17 +178,17 @@ def filter(
         raise ValueError("OpenAI model name not found. Please set it in the .env file.")
 
     log.info("openai_client_configured", model=model_name, max_concurrent=max_concurrent)
-    
+
     # Get records from database
     records = get_records()
-    
+
     if not records:
         log.warning("no_records_found")
         typer.echo("No records found to filter.")
         return
-    
+
     log.info("filtering_records", total_records=len(records))
-    
+
     # Create filtering query record in database
     filtering_query_id = create_filtering_query(
         timestamp=timestamp,
@@ -176,21 +197,21 @@ def filter(
         llm_model=model_name,
         max_concurrent=max_concurrent,
     )
-    
+
     log.info("filtering_query_created", filtering_query_id=filtering_query_id)
-    
+
     # Progress reporting
     typer.echo(f"\nFiltering {len(records)} records with query: '{query}'")
     if exclude:
         typer.echo(f"Excluding: '{exclude}'")
     typer.echo(f"Using model: {model_name} (max concurrent: {max_concurrent})")
     typer.echo("Progress: 0%", nl=False)
-    
+
     def progress_callback(completed: int, total: int):
         """Update progress in the terminal."""
         percent = int((completed / total) * 100)
         typer.echo(f"\rProgress: {percent}% ({completed}/{total})", nl=False)
-    
+
     # Run async filtering with parallelization
     filtering_results = asyncio.run(
         filter_records_with_llm(
@@ -205,37 +226,37 @@ def filter(
             progress_callback=progress_callback,
         )
     )
-    
+
     typer.echo("\n")  # New line after progress
 
     # Store results in database
     log.info("storing_filtering_results", count=len(filtering_results))
-    
+
     # Prepare batch insert data
     batch_data = []
     matched_count = 0
     failed_count = 0
     warning_count = 0
-    
+
     for result in filtering_results:
         record_id, match_result, explanation = result
         batch_data.append((record_id, filtering_query_id, match_result, explanation, timestamp))
-        
+
         # Count matched records (only those without errors)
         if match_result and not explanation.startswith("ERROR:"):
             matched_count += 1
-        
+
         # Count processing failures (API errors, exceptions, etc.)
         if explanation.startswith("ERROR:"):
             failed_count += 1
-        
+
         # Count suspicious results (missing explanations, parse failures)
         if explanation.startswith("WARNING:"):
             warning_count += 1
-    
+
     # Batch insert filtering results
     batch_insert_filtering_results(batch_data)
-    
+
     # Update filtering query statistics
     update_filtering_query_stats(
         filtering_query_id=filtering_query_id,
@@ -243,7 +264,7 @@ def filter(
         matched_count=matched_count,
         failed_count=failed_count,
     )
-    
+
     log.info(
         "filter_completed",
         filtering_query_id=filtering_query_id,
@@ -252,7 +273,7 @@ def filter(
         failed_count=failed_count,
         warning_count=warning_count,
     )
-    
+
     typer.echo("Filtering completed:")
     typer.echo(f"  Total records processed: {len(records)}")
     typer.echo(f"  Matched records: {matched_count}")
@@ -261,23 +282,27 @@ def filter(
         typer.echo(f"  Warning records (missing explanation): {warning_count}")
     typer.echo(f"  Filtering query ID: {filtering_query_id}")
     typer.echo(f"\nResults stored in database: {DB_PATH}")
-    
+
     # Optional export
     if export_path:
         from .io_.export import export_records
-        
+
         # Get matched records for export (excluding error and warning records)
         matched_records = []
         for rec, result in zip(records, filtering_results, strict=False):
             record_id, match_result, explanation = result
             # Only export records that matched AND have valid explanations (no errors or warnings)
-            if match_result and not explanation.startswith("ERROR:") and not explanation.startswith("WARNING:"):
+            if (
+                match_result
+                and not explanation.startswith("ERROR:")
+                and not explanation.startswith("WARNING:")
+            ):
                 matched_records.append(rec)
-        
+
         export_format = export_path.suffix.lstrip(".")
         if export_format not in {"parquet", "csv", "xlsx"}:
             raise ValueError("Unsupported export format. Use .parquet, .csv, or .xlsx")
-        
+
         export_records(matched_records, export_path, format=export_format)
         log.info("records_exported", path=str(export_path), count=len(matched_records))
         typer.echo(f"  Exported {len(matched_records)} matched records to: {export_path}")
@@ -285,12 +310,14 @@ def filter(
 
 @app.command()
 def pdfs(
-    filtering_query_id: int = typer.Option(..., "--query-id", help="Filtering query ID to download PDFs for"),
+    filtering_query_id: int = typer.Option(
+        ..., "--query-id", help="Filtering query ID to download PDFs for"
+    ),
     dest: Path | None = typer.Option(None, "--dest", "-d", help="Destination directory for PDFs"),  # noqa: B008
     max_concurrent: int = typer.Option(5, help="Maximum concurrent downloads"),
 ):
     """Download OA PDFs for matched records from a filtering query.
-    
+
     Resolves PDF candidates and attempts downloads, storing results in database.
     """
     timestamp = datetime.now().isoformat()
@@ -300,41 +327,46 @@ def pdfs(
         destination=str(dest),
         timestamp=timestamp,
     )
-    
+
     # Initialize database
     init_db()
 
     # Resolve default destination if not provided (avoid calling Path() at import time)
     if dest is None:
         dest = Path("data/pdfs")
-    
+
     # Get matched records from filtering query
     typer.echo(f"\nFetching matched records from filtering query {filtering_query_id}...")
     records = get_matched_records_by_filtering_query(filtering_query_id)
-    
+
     if not records:
         log.warning("no_matched_records_found", filtering_query_id=filtering_query_id)
         typer.echo("No matched records found for this filtering query.")
         return
-    
+
     typer.echo(f"Found {len(records)} matched records to process.")
     typer.echo(f"Destination: {dest}")
     typer.echo("\nResolving PDF candidates and downloading...")
-    
+
     # Statistics
     downloaded_count = 0
     unavailable_count = 0
     too_large_count = 0
     error_count = 0
     no_candidates_count = 0
-    
+
     # Process each record
     async def process_record(rec: Record):
-        nonlocal downloaded_count, unavailable_count, too_large_count, error_count, no_candidates_count
-        
+        nonlocal \
+            downloaded_count, \
+            unavailable_count, \
+            too_large_count, \
+            error_count, \
+            no_candidates_count
+
         # Resolve PDF candidates
         candidates = resolve_pdf_candidates(rec)
-        
+
         # Store resolution in database
         insert_pdf_resolution(
             record_id=rec.id,
@@ -342,7 +374,7 @@ def pdfs(
             timestamp=timestamp,
             filtering_query_id=filtering_query_id,
         )
-        
+
         if not candidates:
             no_candidates_count += 1
             log.debug("no_pdf_candidates", record_id=rec.id, doi=rec.doi_norm)
@@ -357,7 +389,7 @@ def pdfs(
                 error_message="No PDF candidates found",
             )
             return
-        
+
         # Try each candidate in order
         download_success = False
         for cand in candidates:
@@ -448,27 +480,27 @@ def pdfs(
                     filtering_query_id=filtering_query_id,
                     error_message=str(e),
                 )
-        
+
         if not download_success:
             log.debug("pdf_all_attempts_failed", record_id=rec.id, doi=rec.doi_norm)
-    
+
     # Process records with concurrency limit
     async def process_all_records():
         semaphore = asyncio.Semaphore(max_concurrent)
-        
+
         async def process_with_semaphore(rec: Record):
             async with semaphore:
                 await process_record(rec)
-        
+
         tasks = [process_with_semaphore(rec) for rec in records]
         await asyncio.gather(*tasks)
-    
+
     # Run processing
     asyncio.run(process_all_records())
-    
+
     # Get final statistics from database
     stats = get_pdf_download_stats(filtering_query_id)
-    
+
     log.info(
         "pdf_download_completed",
         filtering_query_id=filtering_query_id,
@@ -476,7 +508,7 @@ def pdfs(
         stats=stats,
         destination=str(dest),
     )
-    
+
     # Display results
     typer.echo("\nPDF Download Results:")
     typer.echo(f"  Total records processed: {len(records)}")
@@ -493,7 +525,7 @@ def pdfs(
 def export(from_: Path | None = None, format: str = "xlsx"):
     """Export results with rationale and clickable links."""
     log.info("export_started", source=str(from_), format=format)
-    
+
     if from_ is None:
         from_ = typer.Option(..., "--from")
     import pandas as pd
@@ -502,6 +534,6 @@ def export(from_: Path | None = None, format: str = "xlsx"):
     records = [Record(**row) for _, row in df.iterrows()]
     output_path = from_.with_suffix(f".{format}")
     export_records(records, output_path, format=format)
-    
+
     log.info("export_completed", record_count=len(records), output=str(output_path), format=format)
     typer.echo(f"Exported results to {output_path}")

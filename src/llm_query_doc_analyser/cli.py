@@ -97,7 +97,7 @@ def import_(path: Path):
     for rec in records:
         upsert_record(rec)
     log.info("import_completed", record_count=len(records), path=str(path))
-    typer.echo(f"Imported {len(records)} records from {path}")
+    typer.echo(f"Imported {len(records)} research articles from {path}")
 
 
 @app.command()
@@ -105,7 +105,7 @@ def enrich(
     sources: str = typer.Option("unpaywall,crossref,openalex", help="Comma-separated sources"),
     max_workers: int = 8,
 ):
-    """Enrich records with abstracts and OA info."""
+    """Enrich research articles with abstracts and OA info."""
     log.info("enrich_started", sources=sources, max_workers=max_workers)
     records = get_records()
     clients = {}  # In production, pass API clients as needed
@@ -118,7 +118,7 @@ def enrich(
 
     asyncio.run(enrich_all())
     log.info("enrich_completed", record_count=len(records))
-    typer.echo(f"Enriched {len(records)} records.")
+    typer.echo(f"Enriched {len(records)} research articles.")
 
 
 def export_records(records: list[Record], export_path, format="parquet"):
@@ -152,10 +152,10 @@ def filter(
         None, "--export", "-e", help="Optional export path for filtered records"
     ),
 ):
-    """Filter records by querying OpenAI's LLM for relevance using async parallelized calls.
+    """Filter research articles by querying OpenAI's LLM for relevance using async parallelized calls.
 
-    Results are stored in the database (filtering_queries and records_filterings tables).
-    Optionally export filtered records to a file.
+    Results are stored in the database (filtering_queries and records_filterings tables, referencing research_articles).
+    Optionally export filtered research articles to a file.
     """
     timestamp = datetime.now().isoformat()
     log.info(
@@ -179,15 +179,15 @@ def filter(
 
     log.info("openai_client_configured", model=model_name, max_concurrent=max_concurrent)
 
-    # Get records from database
+    # Get research articles from database
     records = get_records()
 
     if not records:
-        log.warning("no_records_found")
-        typer.echo("No records found to filter.")
+        log.warning("no_research_articles_found")
+        typer.echo("No research articles found to filter.")
         return
 
-    log.info("filtering_records", total_records=len(records))
+    log.info("filtering_research_articles", total_records=len(records))
 
     # Create filtering query record in database
     filtering_query_id = create_filtering_query(
@@ -201,7 +201,7 @@ def filter(
     log.info("filtering_query_created", filtering_query_id=filtering_query_id)
 
     # Progress reporting
-    typer.echo(f"\nFiltering {len(records)} records with query: '{query}'")
+    typer.echo(f"\nFiltering {len(records)} research articles with query: '{query}'")
     if exclude:
         typer.echo(f"Excluding: '{exclude}'")
     typer.echo(f"Using model: {model_name} (max concurrent: {max_concurrent})")
@@ -275,11 +275,11 @@ def filter(
     )
 
     typer.echo("Filtering completed:")
-    typer.echo(f"  Total records processed: {len(records)}")
-    typer.echo(f"  Matched records: {matched_count}")
-    typer.echo(f"  Failed records (errors): {failed_count}")
+    typer.echo(f"  Total research articles processed: {len(records)}")
+    typer.echo(f"  Matched articles: {matched_count}")
+    typer.echo(f"  Failed articles (errors): {failed_count}")
     if warning_count > 0:
-        typer.echo(f"  Warning records (missing explanation): {warning_count}")
+        typer.echo(f"  Warning articles (missing explanation): {warning_count}")
     typer.echo(f"  Filtering query ID: {filtering_query_id}")
     typer.echo(f"\nResults stored in database: {DB_PATH}")
 
@@ -287,11 +287,11 @@ def filter(
     if export_path:
         from .io_.export import export_records
 
-        # Get matched records for export (excluding error and warning records)
+        # Get matched research articles for export (excluding error and warning records)
         matched_records = []
         for rec, result in zip(records, filtering_results, strict=False):
             record_id, match_result, explanation = result
-            # Only export records that matched AND have valid explanations (no errors or warnings)
+            # Only export articles that matched AND have valid explanations (no errors or warnings)
             if (
                 match_result
                 and not explanation.startswith("ERROR:")
@@ -304,8 +304,8 @@ def filter(
             raise ValueError("Unsupported export format. Use .parquet, .csv, or .xlsx")
 
         export_records(matched_records, export_path, format=export_format)
-        log.info("records_exported", path=str(export_path), count=len(matched_records))
-        typer.echo(f"  Exported {len(matched_records)} matched records to: {export_path}")
+        log.info("research_articles_exported", path=str(export_path), count=len(matched_records))
+        typer.echo(f"  Exported {len(matched_records)} matched research articles to: {export_path}")
 
 
 @app.command()

@@ -9,8 +9,8 @@ log = get_logger(__name__)
 
 
 def export_records(records: list[Record], path: Path, format: str = "csv") -> None:
-    """Export records to CSV/XLSX/Parquet with required columns."""
-    log.info("exporting_records", count=len(records), path=str(path), format=format)
+    """Export research articles to CSV/XLSX/Parquet with required columns."""
+    log.info("exporting_research_articles", count=len(records), path=str(path), format=format)
     
     df = pd.DataFrame([r.model_dump() for r in records])
     cols = [

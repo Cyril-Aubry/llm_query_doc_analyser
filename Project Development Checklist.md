@@ -101,7 +101,10 @@ Repeat this loop:
 
 ## 7. Keep track of progress
 
-
+### Versin 1
+- [v] Rename records table to research_articles in the whole project
+- [ ] Clean-up records database fields, deleting unused and moving some to the adequate tables
+- [ ] Add a unique constraint on the DOI field of the research_articles table
 
 ---
 

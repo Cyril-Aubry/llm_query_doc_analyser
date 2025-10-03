@@ -11,8 +11,8 @@ log = get_logger(__name__)
 
 
 def load_records(path: Path) -> list[Record]:
-    """Load records from CSV/XLSX, normalize DOIs, dedupe."""
-    log.info("loading_records", path=str(path), format=path.suffix)
+    """Load research articles from CSV/XLSX, normalize DOIs, dedupe."""
+    log.info("loading_research_articles", path=str(path), format=path.suffix)
 
     df = pd.read_excel(path) if path.suffix.lower() == ".xlsx" else pd.read_csv(path)
 
@@ -91,5 +91,5 @@ def load_records(path: Path) -> list[Record]:
         for _, row in df.iterrows()
     ]
 
-    log.info("records_loaded", count=len(records), path=str(path))
+    log.info("research_articles_loaded", count=len(records), path=str(path))
     return records

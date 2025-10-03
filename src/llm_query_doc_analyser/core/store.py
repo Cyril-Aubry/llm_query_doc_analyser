@@ -1,16 +1,19 @@
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Generator
 
 from ..utils.log import get_logger
 from .models import Record  # Ensure the Record class is defined in models.py
 
 log = get_logger(__name__)
 
-DB_PATH = Path("data/cache/records.db")
+
+DB_PATH = Path("data/cache/research_articles_management.db")
 
 CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS records (
+CREATE TABLE IF NOT EXISTS research_articles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT,
     doi_raw TEXT,
@@ -66,7 +69,7 @@ CREATE TABLE IF NOT EXISTS records_filterings (
     match_result INTEGER NOT NULL,
     explanation TEXT,
     timestamp TEXT NOT NULL,
-    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
     FOREIGN KEY (filtering_query_id) REFERENCES filtering_queries(id) ON DELETE CASCADE
 );
 """
@@ -78,7 +81,7 @@ CREATE TABLE IF NOT EXISTS pdf_resolutions (
     filtering_query_id INTEGER,
     timestamp TEXT NOT NULL,
     candidates TEXT NOT NULL,
-    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
     FOREIGN KEY (filtering_query_id) REFERENCES filtering_queries(id) ON DELETE SET NULL
 );
 """
@@ -96,7 +99,7 @@ CREATE TABLE IF NOT EXISTS pdf_downloads (
     sha1 TEXT,
     final_url TEXT,
     error_message TEXT,
-    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
     FOREIGN KEY (filtering_query_id) REFERENCES filtering_queries(id) ON DELETE SET NULL
 );
 """
@@ -113,10 +116,21 @@ CREATE_INDEXES_SQL = [
 ]
 
 
-def get_conn() -> sqlite3.Connection:
+@contextmanager
+def get_conn() -> Generator[sqlite3.Connection, None, None]:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    return conn
+    try:
+        # Reduce chance of WAL leftovers & enforce FK
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=FULL")  # or FULL if you prefer stronger durability
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA busy_timeout=5000") 
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -138,7 +152,7 @@ def insert_record(rec: Record) -> int:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO records (
+            INSERT INTO research_articles (
                 title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
                 abstract_text, abstract_source, pmid, pmcid, openalex_id, s2_paper_id, arxiv_id,
                 is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
@@ -185,7 +199,7 @@ def get_records() -> list[Record]:
     log.debug("fetching_records_from_db", path=str(DB_PATH))
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM records")
+        cur.execute("SELECT * FROM research_articles")
         rows = cur.fetchall()
         cols = [desc[0] for desc in cur.description]
         records = []
@@ -211,7 +225,7 @@ def upsert_record(rec: Record) -> int:
         # Try update by doi_norm
         cur.execute(
             """
-            UPDATE records SET
+            UPDATE research_articles SET
                 title=?, doi_raw=?, pub_date=?, total_citations=?, citations_per_year=?, authors=?, source_title=?,
                 abstract_text=?, abstract_source=?, pmid=?, pmcid=?, openalex_id=?, s2_paper_id=?, arxiv_id=?,
                 is_oa=?, oa_status=?, license=?, oa_pdf_url=?, pdf_status=?, pdf_local_path=?, manual_url_publisher=?, manual_url_repository=?,
@@ -255,7 +269,7 @@ def upsert_record(rec: Record) -> int:
             log.debug("inserting_new_record", doi=rec.doi_norm)
             cur.execute(
                 """
-                INSERT INTO records (
+                INSERT INTO research_articles (
                     title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
                     abstract_text, abstract_source, pmid, pmcid, openalex_id, s2_paper_id, arxiv_id,
                     is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
@@ -312,14 +326,14 @@ def create_filtering_query(
 ) -> int:
     """
     Create a new filtering query record.
-    
+
     Args:
         timestamp: ISO 8601 timestamp of the filtering session
         query: Inclusive criteria query string
         exclude_criteria: Exclusive criteria string
         llm_model: OpenAI model name used
         max_concurrent: Maximum concurrent API calls
-    
+
     Returns:
         The ID of the created filtering query record
     """
@@ -329,7 +343,7 @@ def create_filtering_query(
         query=query[:100],
         model=llm_model,
     )
-    
+
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -343,7 +357,7 @@ def create_filtering_query(
         )
         conn.commit()
         filtering_query_id = cur.lastrowid
-        
+
     log.info(
         "filtering_query_created",
         filtering_query_id=filtering_query_id,
@@ -360,7 +374,7 @@ def update_filtering_query_stats(
 ):
     """
     Update statistics for a filtering query.
-    
+
     Args:
         filtering_query_id: ID of the filtering query
         total_records: Total number of records processed
@@ -374,7 +388,7 @@ def update_filtering_query_stats(
         matched_count=matched_count,
         failed_count=failed_count,
     )
-    
+
     with get_conn() as conn:
         conn.execute(
             """
@@ -385,7 +399,7 @@ def update_filtering_query_stats(
             (total_records, matched_count, failed_count, filtering_query_id),
         )
         conn.commit()
-    
+
     log.info(
         "filtering_query_stats_updated",
         filtering_query_id=filtering_query_id,
@@ -404,7 +418,7 @@ def insert_filtering_result(
 ):
     """
     Insert a filtering result for a record.
-    
+
     Args:
         record_id: ID of the record from records table
         filtering_query_id: ID of the filtering query
@@ -418,7 +432,7 @@ def insert_filtering_result(
         filtering_query_id=filtering_query_id,
         match_result=match_result,
     )
-    
+
     with get_conn() as conn:
         conn.execute(
             """
@@ -436,15 +450,15 @@ def batch_insert_filtering_results(
 ):
     """
     Batch insert filtering results for efficiency.
-    
+
     Args:
         results: List of tuples (record_id, filtering_query_id, match_result, explanation, timestamp)
     """
     if not results:
         return
-    
+
     log.debug("batch_inserting_filtering_results", count=len(results))
-    
+
     with get_conn() as conn:
         conn.executemany(
             """
@@ -455,22 +469,22 @@ def batch_insert_filtering_results(
             [(r[0], r[1], int(r[2]), r[3], r[4]) for r in results],
         )
         conn.commit()
-    
+
     log.info("filtering_results_batch_inserted", count=len(results))
 
 
 def get_filtering_results(filtering_query_id: int) -> list[dict]:
     """
     Retrieve all filtering results for a given filtering query.
-    
+
     Args:
         filtering_query_id: ID of the filtering query
-    
+
     Returns:
         List of dictionaries containing filtering results with record details
     """
     log.debug("fetching_filtering_results", filtering_query_id=filtering_query_id)
-    
+
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -479,7 +493,7 @@ def get_filtering_results(filtering_query_id: int) -> list[dict]:
                 r.id, r.doi_norm, r.title,
                 rf.match_result, rf.explanation, rf.timestamp
             FROM records_filterings rf
-            JOIN records r ON rf.record_id = r.id
+            JOIN research_articles r ON rf.record_id = r.id
             WHERE rf.filtering_query_id = ?
             ORDER BY rf.timestamp
             """,
@@ -488,7 +502,7 @@ def get_filtering_results(filtering_query_id: int) -> list[dict]:
         rows = cur.fetchall()
         cols = [desc[0] for desc in cur.description]
         results = [dict(zip(cols, row, strict=False)) for row in rows]
-    
+
     log.info(
         "filtering_results_fetched",
         filtering_query_id=filtering_query_id,
@@ -500,16 +514,16 @@ def get_filtering_results(filtering_query_id: int) -> list[dict]:
 def get_record_id_by_doi(doi_norm: str) -> int | None:
     """
     Get record ID by normalized DOI.
-    
+
     Args:
         doi_norm: Normalized DOI
-    
+
     Returns:
         Record ID or None if not found
     """
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM records WHERE doi_norm = ?", (doi_norm,))
+        cur.execute("SELECT id FROM research_articles WHERE doi_norm = ?", (doi_norm,))
         row = cur.fetchone()
         return row[0] if row else None
 
@@ -517,20 +531,20 @@ def get_record_id_by_doi(doi_norm: str) -> int | None:
 def get_matched_records_by_filtering_query(filtering_query_id: int) -> list[Record]:
     """
     Get all matched records from a filtering query (excluding errors and warnings).
-    
+
     Args:
         filtering_query_id: ID of the filtering query
-    
+
     Returns:
         List of Record objects that matched
     """
     log.debug("fetching_matched_records", filtering_query_id=filtering_query_id)
-    
+
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT r.* FROM records r
+            SELECT r.* FROM research_articles r
             JOIN records_filterings rf ON r.id = rf.record_id
             WHERE rf.filtering_query_id = ?
                 AND rf.match_result = 1
@@ -551,7 +565,7 @@ def get_matched_records_by_filtering_query(filtering_query_id: int) -> list[Reco
             if data.get("provenance"):
                 data["provenance"] = json.loads(data["provenance"])
             records.append(Record(**data))
-    
+
     log.info(
         "matched_records_fetched",
         filtering_query_id=filtering_query_id,
@@ -572,7 +586,7 @@ def get_record_provenance(record_id: int) -> dict:
     log.debug("fetching_record_provenance", record_id=record_id)
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT provenance FROM records WHERE id = ?", (record_id,))
+        cur.execute("SELECT provenance FROM research_articles WHERE id = ?", (record_id,))
         row = cur.fetchone()
         if not row or not row[0]:
             log.info("provenance_not_found", record_id=record_id)
@@ -598,13 +612,13 @@ def insert_pdf_resolution(
 ) -> int:
     """
     Store PDF resolution candidates for a record.
-    
+
     Args:
         record_id: ID of the record
         candidates: List of PDF candidate dictionaries
         timestamp: ISO format timestamp
         filtering_query_id: Optional filtering query ID
-    
+
     Returns:
         ID of the inserted resolution record
     """
@@ -620,7 +634,7 @@ def insert_pdf_resolution(
         )
         resolution_id = cur.lastrowid
         conn.commit()
-    
+
     log.debug(
         "pdf_resolution_inserted",
         resolution_id=resolution_id,
@@ -644,7 +658,7 @@ def insert_pdf_download(
 ) -> int:
     """
     Store PDF download attempt result.
-    
+
     Args:
         record_id: ID of the record
         url: URL attempted
@@ -656,7 +670,7 @@ def insert_pdf_download(
         sha1: SHA1 hash if downloaded
         final_url: Final URL after redirects
         error_message: Error message if failed
-    
+
     Returns:
         ID of the inserted download record
     """
@@ -684,7 +698,7 @@ def insert_pdf_download(
         )
         download_id = cur.lastrowid
         conn.commit()
-    
+
     log.debug(
         "pdf_download_inserted",
         download_id=download_id,
@@ -697,10 +711,10 @@ def insert_pdf_download(
 def get_pdf_download_stats(filtering_query_id: int | None = None) -> dict:
     """
     Get statistics on PDF download attempts.
-    
+
     Args:
         filtering_query_id: Optional filtering query ID to filter by
-    
+
     Returns:
         Dictionary with status counts
     """

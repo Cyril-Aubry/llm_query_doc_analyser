@@ -1,4 +1,4 @@
-"""Migration: Add citation and bibliographic fields to records table.
+"""Migration: Add citation and bibliographic fields to research_articles table.
 
 This migration adds:
 - total_citations (INTEGER)
@@ -15,7 +15,7 @@ DB_PATH = Path("data/cache/records.db")
 
 
 def migrate():
-    """Add new columns to existing records table."""
+    """Add new columns to existing research_articles table."""
     if not DB_PATH.exists():
         print(f"Database not found at {DB_PATH}. No migration needed.")
         return
@@ -24,7 +24,7 @@ def migrate():
     cursor = conn.cursor()
     
     # Check if columns already exist
-    cursor.execute("PRAGMA table_info(records)")
+    cursor.execute("PRAGMA table_info(research_articles)")
     columns = {row[1] for row in cursor.fetchall()}
     
     migrations_needed = []
@@ -43,14 +43,14 @@ def migrate():
         conn.close()
         return
     
-    print(f"Adding {len(migrations_needed)} new columns to records table...")
+    print(f"Adding {len(migrations_needed)} new columns to research_articles table...")
     
     for col_name, col_type in migrations_needed:
         try:
-            cursor.execute(f"ALTER TABLE records ADD COLUMN {col_name} {col_type}")
-            print(f"  ✓ Added column: {col_name} ({col_type})")
+            cursor.execute(f"ALTER TABLE research_articles ADD COLUMN {col_name} {col_type}")
+            print(f"  \u2713 Added column: {col_name} ({col_type})")
         except sqlite3.OperationalError as e:
-            print(f"  ✗ Failed to add {col_name}: {e}")
+            print(f"  \u2717 Failed to add {col_name}: {e}")
     
     conn.commit()
     conn.close()

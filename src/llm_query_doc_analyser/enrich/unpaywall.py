@@ -2,7 +2,6 @@ import os
 from typing import Any
 
 import httpx
-import typer
 
 from ..core.models import Record
 from ..utils.log import get_logger

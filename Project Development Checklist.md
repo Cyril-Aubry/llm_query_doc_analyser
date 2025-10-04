@@ -14,7 +14,7 @@
    1. **V1:** import excel/CSV file, store and manage paper's references, filter the list for most relevant and download pdf with adequate filename or get url for manual download.
   2. **V2:** Manage pre-print and their possible published version.
 * **What am I not doing now?**
-  Don't manage the updating process of already enriched, resolved or downloaded records
+  Don't manage the updating process of already enriched, resolved or downloaded records. Don't manage the fact of importing same record of research article later on with updated citations number and other data to be updated (check if import date is out of date for example).
 
 ---
 
@@ -101,10 +101,12 @@ Repeat this loop:
 
 ## 7. Keep track of progress
 
-### Versin 1
+### Version 1
 - [v] Rename records table to research_articles in the whole project
-- [ ] Clean-up records database fields, deleting unused and moving some to the adequate tables
-- [ ] Add a unique constraint on the DOI field of the research_articles table
+- [V] Clean-up records database fields, deleting unused and moving some to the adequate tables
+- [V] Add a unique constraint on the DOI field of the research_articles table
+- [V] Implemented IntegrityError catch and notification of skipped import for user
+- [V] Added an import_datetime for each record importation
 
 ---
 

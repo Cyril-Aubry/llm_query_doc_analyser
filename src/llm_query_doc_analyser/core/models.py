@@ -7,6 +7,7 @@ class Record(BaseModel):
     doi_raw: str | None = None
     doi_norm: str | None = None
     pub_date: str | None = None
+    import_datetime: str | None = None
     
     # Citation metrics
     total_citations: int | None = None
@@ -17,6 +18,7 @@ class Record(BaseModel):
     source_title: str | None = None
 
     # Enrichment
+    enrichment_datetime: str | None = None
     abstract_text: str | None = None
     abstract_source: str | None = None  # 's2'|'crossref'|'openalex'|'epmc'|'pubmed'
 

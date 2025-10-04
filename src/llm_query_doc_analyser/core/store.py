@@ -12,12 +12,12 @@ log = get_logger(__name__)
 
 DB_PATH = Path("data/cache/research_articles_management.db")
 
-CREATE_TABLE_SQL = """
+CREATE_RESEARCH_ARTICLES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS research_articles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT,
     doi_raw TEXT,
-    doi_norm TEXT,
+    doi_norm TEXT UNIQUE,
     pub_date TEXT,
     total_citations INTEGER,
     citations_per_year REAL,
@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS research_articles (
     license TEXT,
     oa_pdf_url TEXT,
     match_reasons TEXT,
-    provenance TEXT
+    provenance TEXT,
+    import_datetime TEXT,
+    enrichment_datetime TEXT
 );
 """
 
@@ -125,7 +127,7 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
 def init_db():
     log.info("initializing_database", path=str(DB_PATH))
     with get_conn() as conn:
-        conn.execute(CREATE_TABLE_SQL)
+        conn.execute(CREATE_RESEARCH_ARTICLES_TABLE_SQL)
         conn.execute(CREATE_FILTERING_QUERIES_TABLE_SQL)
         conn.execute(CREATE_RECORDS_FILTERINGS_TABLE_SQL)
         conn.execute(CREATE_PDF_RESOLUTIONS_TABLE_SQL)
@@ -159,8 +161,9 @@ def insert_record(rec: Record) -> int:
                 license,
                 oa_pdf_url,
                 match_reasons,
-                provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                provenance,
+                import_datetime
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.title,
@@ -181,6 +184,7 @@ def insert_record(rec: Record) -> int:
                 rec.oa_pdf_url,
                 json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
+                rec.import_datetime
             ),
         )
         conn.commit()
@@ -207,6 +211,48 @@ def get_records() -> list[Record]:
             records.append(Record(**data))
         log.info("records_fetched", count=len(records), path=str(DB_PATH))
         return records
+
+
+def update_enrichment_record(rec: Record) -> int:
+    """Update record with enrichment."""
+    log.debug("updating enrichment of the record", doi=rec.doi_norm, title=rec.title[:100])
+    with get_conn() as conn:
+        cur = conn.cursor()
+        # Try update by doi_norm
+        cur.execute(
+            """
+            UPDATE research_articles SET
+                abstract_text=?,
+                abstract_source=?,
+                pmid=?,
+                arxiv_id=?,
+                is_oa=?,
+                oa_status=?,
+                license=?,
+                oa_pdf_url=?,
+                match_reasons=?,
+                provenance=?,
+                enrichment_datetime=?
+            WHERE doi_norm=?
+            """,
+            (
+                rec.abstract_text,
+                rec.abstract_source,
+                rec.pmid,
+                rec.arxiv_id,
+                int(rec.is_oa) if rec.is_oa is not None else None,
+                rec.oa_status,
+                rec.license,
+                rec.oa_pdf_url,
+                json.dumps(rec.match_reasons),
+                json.dumps(rec.provenance),
+                rec.enrichment_datetime,
+                rec.doi_norm
+            ),
+        )
+        conn.commit()
+        log.debug("record_updated", doi=rec.doi_norm)
+        return cur.lastrowid
 
 
 def upsert_record(rec: Record) -> int:

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Removed deprecated List import
@@ -22,7 +23,6 @@ def load_records(path: Path) -> list[Record]:
         raise ValueError("Input must have a 'Title' column.")
     df["doi_norm"] = df["DOI"].apply(normalize_doi) if "DOI" in df.columns else None
 
-    # Dedupe by doi_norm else fuzzy title (not implemented here)
     def to_pub_date(val):
         if pd.isnull(val):
             return None
@@ -70,6 +70,8 @@ def load_records(path: Path) -> list[Record]:
             # Applying a function to a Series is faster than df.iterrows()
             df[col] = df[col].apply(to_str_or_none)
 
+    df["import_datetime"] = datetime.now(timezone.utc).isoformat()
+
     # --- Update the final Record creation ---
 
     records = [
@@ -84,6 +86,7 @@ def load_records(path: Path) -> list[Record]:
             total_citations=row.get(
                 "Total Citations"
             ),  # Nullable Int64 converts to None in row.get() if Null
+            import_datetime=row.get("import_datetime"),
             citations_per_year=row.get("Average per Year"),  # NaN converts to None in row.get()
             authors=row.get("Authors"),  # Already converted to str or None
             source_title=row.get("Source Title"),  # Already converted to str or None

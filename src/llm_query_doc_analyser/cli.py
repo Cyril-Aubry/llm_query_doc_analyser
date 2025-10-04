@@ -1,7 +1,8 @@
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from sqlite3 import IntegrityError
 
 import pandas as pd
 import typer
@@ -19,6 +20,8 @@ from .core.store import (
     init_db,
     insert_pdf_download,
     insert_pdf_resolution,
+    insert_record,
+    update_enrichment_record,
     update_filtering_query_stats,
     upsert_record,
 )
@@ -94,10 +97,22 @@ def import_(path: Path):
     log.info("import_started", path=str(path))
     init_db()
     records = load_records(path)
+    inserted_count = 0
+    skipped_count = 0
     for rec in records:
-        upsert_record(rec)
-    log.info("import_completed", record_count=len(records), path=str(path))
-    typer.echo(f"Imported {len(records)} research articles from {path}")
+        try:
+            insert_record(rec)
+            inserted_count += 1
+        except IntegrityError as e:
+            if "UNIQUE constraint failed: research_articles.doi_norm" in str(e):
+                log.warning("duplicate_doi_skipped", doi_norm=rec.doi_norm, title=rec.title)
+                typer.echo(f"Skipped duplicate DOI: {rec.doi_norm} (Title: {rec.title})")
+                skipped_count += 1
+            else:
+                # Re-raise other IntegrityErrors if not related to doi_norm
+                raise
+    log.info("import_completed", record_count=len(records), inserted_count=inserted_count, skipped_count=skipped_count, path=str(path))
+    typer.echo(f"Imported {inserted_count} research articles from {path} (skipped {skipped_count} duplicates)")
 
 
 @app.command()
@@ -108,15 +123,25 @@ def enrich(
     """Enrich research articles with abstracts and OA info."""
     log.info("enrich_started", sources=sources, max_workers=max_workers)
     records = get_records()
+    # Filter records with a enrichment_datetime value not NULL
+    records = [rec for rec in records if rec.enrichment_datetime is None]
+    if not records:
+        log.warning("no_records_to_enrich")
+        typer.echo("No research articles found to enrich.")
+        return
+
     clients = {}  # In production, pass API clients as needed
 
-    async def enrich_all():
+    async def enrich_all(enrichment_datetime):
         tasks = [enrich_record(rec, clients) for rec in records]
         enriched = await asyncio.gather(*tasks)
         for rec in enriched:
-            upsert_record(rec)
+            rec.enrichment_datetime = enrichment_datetime
+            typer.echo(f"rec enrichment_datetime set to {rec.enrichment_datetime} for {rec.title}")
+            update_enrichment_record(rec)
 
-    asyncio.run(enrich_all())
+    enrichment_datetime = datetime.now(timezone.utc).isoformat()
+    asyncio.run(enrich_all(enrichment_datetime))
     log.info("enrich_completed", record_count=len(records))
     typer.echo(f"Enriched {len(records)} research articles.")
 

@@ -35,10 +35,6 @@ CREATE TABLE IF NOT EXISTS research_articles (
     pdf_local_path TEXT,
     manual_url_publisher TEXT,
     manual_url_repository TEXT,
-    rule_score REAL,
-    embed_score REAL,
-    llm_score REAL,
-    relevance_score REAL,
     match_reasons TEXT,
     provenance TEXT
 );
@@ -153,8 +149,8 @@ def insert_record(rec: Record) -> int:
                 title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
                 abstract_text, abstract_source, pmid, arxiv_id,
                 is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
-                rule_score, embed_score, llm_score, relevance_score, match_reasons, provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                match_reasons, provenance
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.title,
@@ -177,10 +173,6 @@ def insert_record(rec: Record) -> int:
                 rec.pdf_local_path,
                 rec.manual_url_publisher,
                 rec.manual_url_repository,
-                rec.rule_score,
-                rec.embed_score,
-                rec.llm_score,
-                rec.relevance_score,
                 json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
             ),
@@ -223,7 +215,7 @@ def upsert_record(rec: Record) -> int:
                 title=?, doi_raw=?, pub_date=?, total_citations=?, citations_per_year=?, authors=?, source_title=?,
                 abstract_text=?, abstract_source=?, pmid=?, arxiv_id=?,
                 is_oa=?, oa_status=?, license=?, oa_pdf_url=?, pdf_status=?, pdf_local_path=?, manual_url_publisher=?, manual_url_repository=?,
-                rule_score=?, embed_score=?, llm_score=?, relevance_score=?, match_reasons=?, provenance=?
+                match_reasons=?, provenance=?
             WHERE doi_norm=?
             """,
             (
@@ -246,10 +238,6 @@ def upsert_record(rec: Record) -> int:
                 rec.pdf_local_path,
                 rec.manual_url_publisher,
                 rec.manual_url_repository,
-                rec.rule_score,
-                rec.embed_score,
-                rec.llm_score,
-                rec.relevance_score,
                 json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
                 rec.doi_norm,
@@ -264,8 +252,8 @@ def upsert_record(rec: Record) -> int:
                     title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
                     abstract_text, abstract_source, pmid, arxiv_id,
                     is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
-                    rule_score, embed_score, llm_score, relevance_score, match_reasons, provenance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    match_reasons, provenance
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.title,
@@ -288,10 +276,6 @@ def upsert_record(rec: Record) -> int:
                     rec.pdf_local_path,
                     rec.manual_url_publisher,
                     rec.manual_url_repository,
-                    rec.rule_score,
-                    rec.embed_score,
-                    rec.llm_score,
-                    rec.relevance_score,
                     json.dumps(rec.match_reasons),
                     json.dumps(rec.provenance),
                 ),

@@ -35,10 +35,6 @@ class Record(BaseModel):
     manual_url_repository: str | None = None
 
     # Scoring
-    rule_score: float | None = None
-    embed_score: float | None = None
-    llm_score: float | None = None
-    relevance_score: float | None = None
     match_reasons: list[str] = Field(default_factory=list)
 
     provenance: dict[str, dict] = Field(default_factory=dict)

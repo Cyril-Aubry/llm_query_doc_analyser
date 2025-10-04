@@ -15,7 +15,7 @@ def export_records(records: list[Record], path: Path, format: str = "csv") -> No
     df = pd.DataFrame([r.model_dump() for r in records])
     cols = [
         "title", "doi_norm", "pub_date", "total_citations", "citations_per_year", "authors", "source_title",
-        "abstract_source", "relevance_score", "match_reasons",
+        "abstract_source", "match_reasons",
         "pdf_status", "pdf_local_path", "manual_url_publisher", "manual_url_repository", "license", "is_oa"
     ]
     df = df[[c for c in cols if c in df.columns]]

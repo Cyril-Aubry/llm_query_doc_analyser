@@ -31,10 +31,6 @@ CREATE TABLE IF NOT EXISTS research_articles (
     oa_status TEXT,
     license TEXT,
     oa_pdf_url TEXT,
-    pdf_status TEXT,
-    pdf_local_path TEXT,
-    manual_url_publisher TEXT,
-    manual_url_repository TEXT,
     match_reasons TEXT,
     provenance TEXT
 );
@@ -146,11 +142,25 @@ def insert_record(rec: Record) -> int:
         cur.execute(
             """
             INSERT INTO research_articles (
-                title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
-                abstract_text, abstract_source, pmid, arxiv_id,
-                is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
-                match_reasons, provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                title,
+                doi_raw,
+                doi_norm,
+                pub_date,
+                total_citations,
+                citations_per_year,
+                authors,
+                source_title,
+                abstract_text,
+                abstract_source,
+                pmid,
+                arxiv_id,
+                is_oa,
+                oa_status,
+                license,
+                oa_pdf_url,
+                match_reasons,
+                provenance
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.title,
@@ -169,10 +179,6 @@ def insert_record(rec: Record) -> int:
                 rec.oa_status,
                 rec.license,
                 rec.oa_pdf_url,
-                rec.pdf_status,
-                rec.pdf_local_path,
-                rec.manual_url_publisher,
-                rec.manual_url_repository,
                 json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
             ),
@@ -212,10 +218,23 @@ def upsert_record(rec: Record) -> int:
         cur.execute(
             """
             UPDATE research_articles SET
-                title=?, doi_raw=?, pub_date=?, total_citations=?, citations_per_year=?, authors=?, source_title=?,
-                abstract_text=?, abstract_source=?, pmid=?, arxiv_id=?,
-                is_oa=?, oa_status=?, license=?, oa_pdf_url=?, pdf_status=?, pdf_local_path=?, manual_url_publisher=?, manual_url_repository=?,
-                match_reasons=?, provenance=?
+                title=?,
+                doi_raw=?,
+                pub_date=?,
+                total_citations=?,
+                citations_per_year=?,
+                authors=?,
+                source_title=?,
+                abstract_text=?,
+                abstract_source=?,
+                pmid=?,
+                arxiv_id=?,
+                is_oa=?,
+                oa_status=?,
+                license=?,
+                oa_pdf_url=?,
+                match_reasons=?,
+                provenance=?
             WHERE doi_norm=?
             """,
             (
@@ -234,10 +253,6 @@ def upsert_record(rec: Record) -> int:
                 rec.oa_status,
                 rec.license,
                 rec.oa_pdf_url,
-                rec.pdf_status,
-                rec.pdf_local_path,
-                rec.manual_url_publisher,
-                rec.manual_url_repository,
                 json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
                 rec.doi_norm,
@@ -249,11 +264,25 @@ def upsert_record(rec: Record) -> int:
             cur.execute(
                 """
                 INSERT INTO research_articles (
-                    title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
-                    abstract_text, abstract_source, pmid, arxiv_id,
-                    is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
-                    match_reasons, provenance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    title, 
+                    doi_raw, 
+                    doi_norm, 
+                    pub_date, 
+                    total_citations, 
+                    citations_per_year, 
+                    authors, 
+                    source_title,
+                    abstract_text, 
+                    abstract_source, 
+                    pmid, 
+                    arxiv_id,
+                    is_oa, 
+                    oa_status, 
+                    license, 
+                    oa_pdf_url, 
+                    match_reasons, 
+                    provenance
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.title,
@@ -272,10 +301,6 @@ def upsert_record(rec: Record) -> int:
                     rec.oa_status,
                     rec.license,
                     rec.oa_pdf_url,
-                    rec.pdf_status,
-                    rec.pdf_local_path,
-                    rec.manual_url_publisher,
-                    rec.manual_url_repository,
                     json.dumps(rec.match_reasons),
                     json.dumps(rec.provenance),
                 ),

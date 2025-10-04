@@ -29,10 +29,6 @@ class Record(BaseModel):
     oa_status: str | None = None
     license: str | None = None
     oa_pdf_url: str | None = None
-    pdf_status: str | None = None       # 'downloaded'|'restricted'|'unavailable'
-    pdf_local_path: str | None = None
-    manual_url_publisher: str | None = None
-    manual_url_repository: str | None = None
 
     # Scoring
     match_reasons: list[str] = Field(default_factory=list)

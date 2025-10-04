@@ -1,8 +1,8 @@
 import json
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
 
 from ..utils.log import get_logger
 from .models import Record  # Ensure the Record class is defined in models.py

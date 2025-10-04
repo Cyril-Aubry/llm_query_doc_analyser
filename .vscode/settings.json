@@ -21,6 +21,7 @@
         "file:/**/*.csv": "jupyter-data-wrangler"
     },
     "cSpell.ignoreWords": [
+        "filterings",
         "pmid"
     ]
 }

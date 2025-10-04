@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS research_articles (
 CREATE_FILTERING_QUERIES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS filtering_queries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,
+    filtering_query_datetime TEXT NOT NULL,
     query TEXT NOT NULL,
     exclude_criteria TEXT,
     llm_model TEXT NOT NULL,
@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS records_filterings (
     filtering_query_id INTEGER NOT NULL,
     match_result INTEGER NOT NULL,
     explanation TEXT,
-    timestamp TEXT NOT NULL,
     FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
     FOREIGN KEY (filtering_query_id) REFERENCES filtering_queries(id) ON DELETE CASCADE
 );
@@ -98,7 +97,7 @@ CREATE TABLE IF NOT EXISTS pdf_downloads (
 CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_records_filterings_record_id ON records_filterings(record_id);",
     "CREATE INDEX IF NOT EXISTS idx_records_filterings_filtering_query_id ON records_filterings(filtering_query_id);",
-    "CREATE INDEX IF NOT EXISTS idx_filtering_queries_timestamp ON filtering_queries(timestamp);",
+    "CREATE INDEX IF NOT EXISTS idx_filtering_queries_datetime ON filtering_queries(filtering_query_datetime);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_resolutions_record_id ON pdf_resolutions(record_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_resolutions_filtering_query_id ON pdf_resolutions(filtering_query_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_record_id ON pdf_downloads(record_id);",
@@ -392,7 +391,7 @@ def create_filtering_query(
         cur.execute(
             """
             INSERT INTO filtering_queries (
-                timestamp, query, exclude_criteria, llm_model, max_concurrent,
+                filtering_query_datetime, query, exclude_criteria, llm_model, max_concurrent,
                 total_records, matched_count, failed_count
             ) VALUES (?, ?, ?, ?, ?, 0, 0, 0)
             """,
@@ -489,7 +488,7 @@ def insert_filtering_result(
 
 
 def batch_insert_filtering_results(
-    results: list[tuple[int, int, bool, str, str]],
+    results: list[tuple[int, int, bool, str]],
 ):
     """
     Batch insert filtering results for efficiency.
@@ -506,10 +505,10 @@ def batch_insert_filtering_results(
         conn.executemany(
             """
             INSERT INTO records_filterings (
-                record_id, filtering_query_id, match_result, explanation, timestamp
-            ) VALUES (?, ?, ?, ?, ?)
+                record_id, filtering_query_id, match_result, explanation
+            ) VALUES (?, ?, ?, ?)
             """,
-            [(r[0], r[1], int(r[2]), r[3], r[4]) for r in results],
+            [(r[0], r[1], int(r[2]), r[3]) for r in results],
         )
         conn.commit()
 

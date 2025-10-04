@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import IntegrityError
 
@@ -23,7 +23,6 @@ from .core.store import (
     insert_record,
     update_enrichment_record,
     update_filtering_query_stats,
-    upsert_record,
 )
 from .enrich.orchestrator import enrich_record
 from .filter_rank.prompts import filter_records_with_llm
@@ -140,7 +139,7 @@ def enrich(
             typer.echo(f"rec enrichment_datetime set to {rec.enrichment_datetime} for {rec.title}")
             update_enrichment_record(rec)
 
-    enrichment_datetime = datetime.now(timezone.utc).isoformat()
+    enrichment_datetime = datetime.now(UTC).isoformat()
     asyncio.run(enrich_all(enrichment_datetime))
     log.info("enrich_completed", record_count=len(records))
     typer.echo(f"Enriched {len(records)} research articles.")
@@ -182,13 +181,13 @@ def filter(
     Results are stored in the database (filtering_queries and records_filterings tables, referencing research_articles).
     Optionally export filtered research articles to a file.
     """
-    timestamp = datetime.now().isoformat()
+    filtering_query_datetime = datetime.now(UTC).isoformat()
     log.info(
         "filter_started",
         query=query,
         exclude=exclude,
         max_concurrent=max_concurrent,
-        timestamp=timestamp,
+        timestamp=filtering_query_datetime,
     )
 
     # Retrieve OpenAI API key and model name from environment variables
@@ -216,7 +215,7 @@ def filter(
 
     # Create filtering query record in database
     filtering_query_id = create_filtering_query(
-        timestamp=timestamp,
+        timestamp=filtering_query_datetime,
         query=query,
         exclude_criteria=exclude,
         llm_model=model_name,
@@ -246,8 +245,6 @@ def filter(
             api_key=openai_api_key,
             model_name=model_name,
             max_concurrent=max_concurrent,
-            filtering_query_id=filtering_query_id,
-            timestamp=timestamp,
             progress_callback=progress_callback,
         )
     )
@@ -265,7 +262,7 @@ def filter(
 
     for result in filtering_results:
         record_id, match_result, explanation = result
-        batch_data.append((record_id, filtering_query_id, match_result, explanation, timestamp))
+        batch_data.append((record_id, filtering_query_id, match_result, explanation))
 
         # Count matched records (only those without errors)
         if match_result and not explanation.startswith("ERROR:"):

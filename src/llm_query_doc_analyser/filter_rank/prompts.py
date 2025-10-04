@@ -182,8 +182,6 @@ async def filter_records_with_llm(
     api_key: str,
     model_name: str,
     max_concurrent: int = 10,
-    filtering_query_id: int | None = None,
-    timestamp: str | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[tuple[int, bool, str]]:
     """
@@ -196,8 +194,6 @@ async def filter_records_with_llm(
         api_key: OpenAI API key
         model_name: OpenAI model name to use
         max_concurrent: Maximum number of concurrent API calls
-        filtering_query_id: Optional filtering query ID for database storage
-        timestamp: Optional timestamp for database storage
         progress_callback: Optional callback function to report progress (completed_count, total_count)
     
     Returns:

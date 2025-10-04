@@ -19,5 +19,8 @@
         "*.copilotmd": "vscode.markdown.preview.editor",
         "{git,gitlens,chat-editing-snapshot-text-model,copilot,git-graph,git-graph-3}:/**/*.ui": "default",
         "file:/**/*.csv": "jupyter-data-wrangler"
-    }
+    },
+    "cSpell.ignoreWords": [
+        "pmid"
+    ]
 }

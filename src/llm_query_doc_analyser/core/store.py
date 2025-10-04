@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS research_articles (
     abstract_text TEXT,
     abstract_source TEXT,
     pmid TEXT,
-    s2_paper_id TEXT,
     arxiv_id TEXT,
     is_oa INTEGER,
     oa_status TEXT,
@@ -152,7 +151,7 @@ def insert_record(rec: Record) -> int:
             """
             INSERT INTO research_articles (
                 title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
-                abstract_text, abstract_source, pmid, s2_paper_id, arxiv_id,
+                abstract_text, abstract_source, pmid, arxiv_id,
                 is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
                 rule_score, embed_score, llm_score, relevance_score, match_reasons, provenance
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -169,7 +168,6 @@ def insert_record(rec: Record) -> int:
                 rec.abstract_text,
                 rec.abstract_source,
                 rec.pmid,
-                rec.s2_paper_id,
                 rec.arxiv_id,
                 int(rec.is_oa) if rec.is_oa is not None else None,
                 rec.oa_status,
@@ -223,7 +221,7 @@ def upsert_record(rec: Record) -> int:
             """
             UPDATE research_articles SET
                 title=?, doi_raw=?, pub_date=?, total_citations=?, citations_per_year=?, authors=?, source_title=?,
-                abstract_text=?, abstract_source=?, pmid=?, s2_paper_id=?, arxiv_id=?,
+                abstract_text=?, abstract_source=?, pmid=?, arxiv_id=?,
                 is_oa=?, oa_status=?, license=?, oa_pdf_url=?, pdf_status=?, pdf_local_path=?, manual_url_publisher=?, manual_url_repository=?,
                 rule_score=?, embed_score=?, llm_score=?, relevance_score=?, match_reasons=?, provenance=?
             WHERE doi_norm=?
@@ -239,7 +237,6 @@ def upsert_record(rec: Record) -> int:
                 rec.abstract_text,
                 rec.abstract_source,
                 rec.pmid,
-                rec.s2_paper_id,
                 rec.arxiv_id,
                 int(rec.is_oa) if rec.is_oa is not None else None,
                 rec.oa_status,
@@ -265,7 +262,7 @@ def upsert_record(rec: Record) -> int:
                 """
                 INSERT INTO research_articles (
                     title, doi_raw, doi_norm, pub_date, total_citations, citations_per_year, authors, source_title,
-                    abstract_text, abstract_source, pmid, s2_paper_id, arxiv_id,
+                    abstract_text, abstract_source, pmid, arxiv_id,
                     is_oa, oa_status, license, oa_pdf_url, pdf_status, pdf_local_path, manual_url_publisher, manual_url_repository,
                     rule_score, embed_score, llm_score, relevance_score, match_reasons, provenance
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -282,7 +279,6 @@ def upsert_record(rec: Record) -> int:
                     rec.abstract_text,
                     rec.abstract_source,
                     rec.pmid,
-                    rec.s2_paper_id,
                     rec.arxiv_id,
                     int(rec.is_oa) if rec.is_oa is not None else None,
                     rec.oa_status,

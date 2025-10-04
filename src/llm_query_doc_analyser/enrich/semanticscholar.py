@@ -1,9 +1,11 @@
-import httpx
-from typing import Tuple, Any
-from ..core.models import Record
-import os
+from typing import Any
 
-async def fetch_semanticscholar(rec: Record, api_key: str) -> Tuple[dict, Any]:
+import httpx
+
+from ..core.models import Record
+
+
+async def fetch_semanticscholar(rec: Record, api_key: str) -> tuple[dict, Any]:
     """Fetch Semantic Scholar metadata and abstract by DOI (if API key provided)."""
     if not rec.doi_norm or not api_key:
         return {}, {}

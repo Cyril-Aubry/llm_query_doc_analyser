@@ -106,7 +106,9 @@ Repeat this loop:
 - [V] Clean-up records database fields, deleting unused and moving some to the adequate tables
 - [V] Add a unique constraint on the DOI field of the research_articles table
 - [V] Implemented IntegrityError catch and notification of skipped import for user
-- [V] Added an import_datetime for each record importation
+- [V] Added an import_datetime and enrichment datetime for each record importation and enrichment
+- [V] Excluded enrichment of records having a enrichment_datetime value
+- []
 
 ---
 

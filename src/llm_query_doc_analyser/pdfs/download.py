@@ -43,9 +43,7 @@ async def download_pdf(candidate: dict[str, Any], dest_dir: Path) -> dict[str, A
                     
                     # Download and save
                     sha1 = sha1_bytes(resp.content)
-                    subdir = dest_dir / sha1[:2] / sha1[2:4]
-                    subdir.mkdir(parents=True, exist_ok=True)
-                    pdf_path = subdir / f"{sha1}.pdf"
+                    pdf_path = dest_dir / f"{sha1}.pdf"
                     pdf_path.write_bytes(resp.content)
                     
                     return {

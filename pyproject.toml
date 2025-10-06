@@ -106,3 +106,4 @@ files = ["src", "tests"]
 addopts = "-q --strict-markers"
 testpaths = ["tests"]
 pythonpath = ["src"]
+asyncio_mode = "auto"

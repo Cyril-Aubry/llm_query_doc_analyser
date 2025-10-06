@@ -1,8 +1,8 @@
-from src.llm_query_doc_analyser.core.models import Record
-from src.llm_query_doc_analyser.pdfs.resolve import resolve_pdf_candidates
+from llm_query_doc_analyser.core.models import Record
+from llm_query_doc_analyser.pdfs.resolve import resolve_pdf_candidates
 
 
-def test_resolve_pdf_candidates():
+def test_resolve_pdf_candidates() -> None:
     rec = Record(
         title="Test",
         doi_raw="10.1/abc",

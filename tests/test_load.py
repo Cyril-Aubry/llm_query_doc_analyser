@@ -1,10 +1,12 @@
 
+from pathlib import Path
+
 import pandas as pd
 
-from src.llm_query_doc_analyser.io_.load import load_records
+from llm_query_doc_analyser.io_.load import load_records
 
 
-def test_load_records(tmp_path):
+def test_load_records(tmp_path: Path) -> None:
     df = pd.DataFrame({'Title': ['A', 'B'], 'DOI': ['10.1/abc', '10.2/def'], 'Publication Date': ['2020-07-20', '2021-06-21']}).astype({'Publication Date': str})
     f = tmp_path / 'test.csv'
     df.to_csv(f, index=False)

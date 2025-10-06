@@ -1,6 +1,8 @@
 # tests/test_import_research_articles.py
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,7 +13,7 @@ SAMPLE_XLSX = Path("docs/sample_import_example.xlsx")
 
 
 @pytest.fixture
-def temp_db(monkeypatch, tmp_path):
+def temp_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[Path, Any, None]:
     db_path = tmp_path / "test_records.db"
     monkeypatch.setattr("llm_query_doc_analyser.core.store.DB_PATH", db_path)
     init_db()
@@ -27,7 +29,7 @@ def temp_db(monkeypatch, tmp_path):
     gc.collect()
 
 
-def test_import_research_articles_from_xlsx(temp_db):
+def test_import_research_articles_from_xlsx(temp_db: Path) -> None:
     records = load_records(SAMPLE_XLSX)
     assert records, "No records loaded from sample XLSX."
 

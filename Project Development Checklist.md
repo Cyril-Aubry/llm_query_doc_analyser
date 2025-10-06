@@ -108,6 +108,7 @@ Repeat this loop:
 - [V] Implemented IntegrityError catch and notification of skipped import for user
 - [V] Added an import_datetime and enrichment datetime for each record importation and enrichment
 - [V] Excluded enrichment of records having a enrichment_datetime value
+- [V] Refactors filtering query timestamp handling. Renames filtering query timestamp fields to clarify their meaning and removes redundant timestamp storage from filter results.
 - []
 
 ---

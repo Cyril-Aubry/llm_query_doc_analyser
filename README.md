@@ -1,49 +1,22 @@
-
 # llm_query_doc_analyser
 
 `llm_query_doc_analyser` is a production-ready command-line tool for scholarly literature analysis, enrichment, semantic filtering, and Open Access PDF management. Designed for researchers and engineers, it automates the process of loading, enriching, filtering, and exporting scholarly records with strict Open Access guardrails and full provenance tracking.
 
-## Core Functionality
+---
+## Key Features
 
-### 1. Input Processing
-- Accepts Excel/CSV files containing scholarly records
-- Required fields: `title`
-- Optional fields: `DOI`, `publication date`
-- Validates input format and data integrity
+- **Input Processing:** Accepts Excel/CSV files, validates data, and ensures required fields.
+- **Abstract Enrichment:** Integrates with public scholarly APIs, caches responses, and tracks provenance.
+- **Semantic Filtering:** Supports advanced natural language queries and relevance scoring.
+- **PDF Management:** Downloads only Open Access PDFs, manages links, and organizes files securely.
+- **Export Functionality:** Outputs to CSV, XLSX, and Parquet with full metadata and provenance.
 
-### 2. Abstract Enrichment
-- Utilizes public scholarly APIs (Crossref, Unpaywall, OpenAlex, EuropePMC, PubMed)
-- Implements rate limiting and exponential backoff
-- Caches API responses locally
-- Includes API attribution (email in User-Agent)
-- Stores provenance metadata (source, URL, timestamp, raw response)
-
-### 3. Semantic Filtering
-- Natural language query processing for advanced filtering
-- Supports user-defined criteria (e.g., "image semantic segmentation on 2D image data only")
-- Calculates and stores relevance scores
-- Documents filtering logic and thresholds
-
-### 4. PDF Management
-- Downloads PDFs only from Open Access sources returning:
-	- HTTP 200 status
-	- Content-Type: application/pdf
-	- No authentication required
-- Generates clean links for non-downloadable papers:
-	- Publisher DOI landing page
-	- Repository landing page
-- Stores PDFs using SHA1-based directory structure
-
-### 5. Export Functionality
-- Supports CSV, XLSX, and Parquet formats
-- Includes enriched metadata, relevance scores, and filtering rationale
-- Exports PDF paths or access links
-- Maintains data provenance throughout
-
+---
 ## Technical Requirements
+
+- Python 3.11 (see `pyproject.toml` for version constraints)
 - Follows PEP 8 and modern Python best practices
-- Comprehensive error handling
-- Type hints and docstrings throughout
+- Comprehensive error handling, type hints, and docstrings
 - CLI help documentation
 - Asyncio for concurrent API requests
 - Structured logging with configurable levels
@@ -52,6 +25,7 @@
 - Unit tests with >= 80% coverage
 - API rate limits and quotas documented
 
+---
 ## Project Structure
 
 ```
@@ -99,37 +73,50 @@ llm_query_doc_analyser/
 	 └─ data/fixtures/*.json
 ```
 
+---
 ## Guardrails & Scope
+
 - No university credentials, proxy/VPN logic, or scraping of paywalled HTML
 - Programmatic PDF fetches only from OA endpoints (HTTP 200, Content-Type: application/pdf, no cookies/auth)
 - Strict API etiquette: rate-limit, backoff, cache, and include contact email in User-Agent
 - Full provenance for all injected fields (source, URL, timestamp, raw JSON)
 
+---
 ## Required Dependencies
-- `pandas`: data processing
-- `httpx`: async HTTP client
-- `pydantic`: data validation
-- `click`: CLI interface
-- `pytest`: testing
-- `loguru`: logging
-- `python-dotenv`: configuration
 
+- `pandas`, `openpyxl`: data processing
+- `httpx[http2]`: async HTTP client
+- `pydantic`: data validation
+- `typer`: CLI interface
+- `pytest`, `pytest-asyncio`, `pytest-cov`, `respx`: testing
+- `loguru`, `structlog`: logging
+- `python-dotenv`: configuration
+- `tenacity`: retry logic
+- `rapidfuzz`, `rank-bm25`, `sentence-transformers`, `faiss-cpu`: semantic filtering
+- `pypdf`: PDF handling
+- `openai`, `spacy`, `nltk`: LLM and NLP support
+
+See `pyproject.toml` for the full list.
+
+---
 ## Installation
 
-```sh
+```powershell
 # Clone the repository
 git clone <repo-url>
 cd llm_query_doc_analyser
 
 # Install dependencies (recommended: use a virtual environment)
-pip install -r requirements.txt
-# or, if using pyproject.toml/uv
+# If using requirements.txt:
+# pip install -r requirements.txt
+# If using pyproject.toml and uv:
 uv pip install
 ```
 
+---
 ## Usage
 
-```sh
+```powershell
 # Show CLI help
 python -m llm_query_doc_analyser --help
 
@@ -141,14 +128,77 @@ python -m llm_query_doc_analyser pdfs
 python -m llm_query_doc_analyser export outputs/results.xlsx
 ```
 
-## Documentation
+---
+## API Documentation
 
-- **API Reference**: See `src/llm_query_doc_analyser/` modules for details
-- **Rate Limits**: Each API client implements rate limiting and backoff; see code and API docs for quotas
-- **Cache Configuration**: HTTP and database cache stored in `data/cache/`
-- **Error Handling**: Comprehensive error handling and logging; see logs for details
-- **Contributing**: PRs and issues welcome! Please add tests and follow code style guidelines
+- See `src/llm_query_doc_analyser/` modules for details on each component.
+- Each API client implements rate limiting and backoff; see code and API docs for quotas.
+- HTTP and database cache stored in `data/cache/`.
+- Comprehensive error handling and logging; see logs for details.
 
+---
+
+## Configuration
+
+All configuration is managed via environment variables. Copy `.env.example` to `.env` and edit as needed:
+
+```powershell
+cp .env.example .env
+# Then edit .env with your API keys and settings
+```
+
+Key variables:
+
+- `UNPAYWALL_EMAIL`: Your email for Unpaywall API
+- `S2_API_KEY`: (Optional) Semantic Scholar API key
+- `OPENAI_API_KEY`: (Optional) For LLM-based filtering
+- `OPENAI_MODEL`: (Optional) Model name (e.g., gpt-4)
+- `LOG_LEVEL`: Logging verbosity
+
+---
+
+## Development Setup & Contribution Guidelines
+
+1. Fork and clone the repository.
+2. Install dependencies as above.
+3. Use a virtual environment for isolation.
+4. Follow PEP 8 and use type hints and docstrings.
+5. Run linting and type checks:
+
+```powershell
+uv run ruff check src
+uv run mypy src
+```
+
+6. Add or update tests in the `tests/` directory.
+7. Ensure all tests pass before submitting a PR:
+
+```powershell
+uv run pytest
+```
+
+---
+
+## Testing Instructions
+
+Run all tests with:
+
+```powershell
+uv run pytest
+```
+
+Test coverage is expected to be >= 80%. Add tests for new features or bug fixes.
+
+---
+
+## Known Issues or Limitations
+
+- No support for paywalled or non-OA PDF downloads
+- No scraping or proxy logic
+- API rate limits may restrict throughput
+- Only tested on Python 3.11
+
+---
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

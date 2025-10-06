@@ -2,6 +2,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import structlog
 
@@ -86,8 +87,8 @@ def setup_logging(session_id: str | None = None, log_level: str = "INFO", consol
 
     return log_file
 
-
 def get_logger(name: str) -> structlog.BoundLogger:
     """Return a bound logger for a module/package."""
     # add_logger_name processor already injects the name; no need to bind a duplicate field
+    return cast(structlog.BoundLogger, structlog.get_logger(name))
     return structlog.get_logger(name)

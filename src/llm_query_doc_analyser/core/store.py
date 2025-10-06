@@ -3,6 +3,7 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from ..utils.log import get_logger
 from .models import Record  # Ensure the Record class is defined in models.py
@@ -68,11 +69,9 @@ CREATE_PDF_RESOLUTIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS pdf_resolutions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     record_id INTEGER NOT NULL,
-    filtering_query_id INTEGER,
-    timestamp TEXT NOT NULL,
+    resolution_datetime TEXT NOT NULL,
     candidates TEXT NOT NULL,
-    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
-    FOREIGN KEY (filtering_query_id) REFERENCES filtering_queries(id) ON DELETE SET NULL
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE
 );
 """
 
@@ -80,8 +79,7 @@ CREATE_PDF_DOWNLOADS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS pdf_downloads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     record_id INTEGER NOT NULL,
-    filtering_query_id INTEGER,
-    timestamp TEXT NOT NULL,
+    download_attempt_datetime TEXT NOT NULL,
     url TEXT NOT NULL,
     source TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -89,8 +87,7 @@ CREATE TABLE IF NOT EXISTS pdf_downloads (
     sha1 TEXT,
     final_url TEXT,
     error_message TEXT,
-    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
-    FOREIGN KEY (filtering_query_id) REFERENCES filtering_queries(id) ON DELETE SET NULL
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE
 );
 """
 
@@ -99,9 +96,7 @@ CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_records_filterings_filtering_query_id ON records_filterings(filtering_query_id);",
     "CREATE INDEX IF NOT EXISTS idx_filtering_queries_datetime ON filtering_queries(filtering_query_datetime);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_resolutions_record_id ON pdf_resolutions(record_id);",
-    "CREATE INDEX IF NOT EXISTS idx_pdf_resolutions_filtering_query_id ON pdf_resolutions(filtering_query_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_record_id ON pdf_downloads(record_id);",
-    "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_filtering_query_id ON pdf_downloads(filtering_query_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_status ON pdf_downloads(status);",
 ]
 
@@ -116,14 +111,14 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=FULL")  # or FULL if you prefer stronger durability
         conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA busy_timeout=5000") 
+        conn.execute("PRAGMA busy_timeout=5000")
         yield conn
         conn.commit()
     finally:
         conn.close()
 
 
-def init_db():
+def init_db() -> None:
     log.info("initializing_database", path=str(DB_PATH))
     with get_conn() as conn:
         conn.execute(CREATE_RESEARCH_ARTICLES_TABLE_SQL)
@@ -183,7 +178,7 @@ def insert_record(rec: Record) -> int:
                 rec.oa_pdf_url,
                 json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
-                rec.import_datetime
+                rec.import_datetime,
             ),
         )
         conn.commit()
@@ -212,8 +207,11 @@ def get_records() -> list[Record]:
         return records
 
 
-def update_enrichment_record(rec: Record) -> int:
-    """Update record with enrichment."""
+def update_enrichment_record(rec: Record) -> int | None:
+    """
+    Update record with enrichment. Returns the last inserted row id if available,
+    or None for non-insert operations.
+    """
     log.debug("updating enrichment of the record", doi=rec.doi_norm, title=rec.title[:100])
     with get_conn() as conn:
         cur = conn.cursor()
@@ -246,7 +244,7 @@ def update_enrichment_record(rec: Record) -> int:
                 json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
                 rec.enrichment_datetime,
-                rec.doi_norm
+                rec.doi_norm,
             ),
         )
         conn.commit()
@@ -254,7 +252,7 @@ def update_enrichment_record(rec: Record) -> int:
         return cur.lastrowid
 
 
-def upsert_record(rec: Record) -> int:
+def upsert_record(rec: Record) -> int | None:
     """Update if doi_norm exists, else insert."""
     log.debug("upserting_record", doi=rec.doi_norm, title=rec.title[:100])
     with get_conn() as conn:
@@ -365,7 +363,7 @@ def create_filtering_query(
     exclude_criteria: str,
     llm_model: str,
     max_concurrent: int,
-) -> int:
+) -> int | None:
     """
     Create a new filtering query record.
 
@@ -413,7 +411,7 @@ def update_filtering_query_stats(
     total_records: int,
     matched_count: int,
     failed_count: int,
-):
+) -> None:
     """
     Update statistics for a filtering query.
 
@@ -457,7 +455,7 @@ def insert_filtering_result(
     match_result: bool,
     explanation: str,
     timestamp: str,
-):
+) -> None:
     """
     Insert a filtering result for a record.
 
@@ -489,7 +487,7 @@ def insert_filtering_result(
 
 def batch_insert_filtering_results(
     results: list[tuple[int, int, bool, str]],
-):
+) -> None:
     """
     Batch insert filtering results for efficiency.
 
@@ -616,7 +614,7 @@ def get_matched_records_by_filtering_query(filtering_query_id: int) -> list[Reco
     return records
 
 
-def get_record_provenance(record_id: int) -> dict:
+def get_record_provenance(record_id: int) -> dict[Any, Any]:
     """Retrieve the provenance JSON for a specific record.
 
     Args:
@@ -635,119 +633,267 @@ def get_record_provenance(record_id: int) -> dict:
             return {}
         try:
             prov = json.loads(row[0])
+            # If the parsed provenance is not a dict, return an empty dict to match the declared return type
+            if not isinstance(prov, dict):
+                log.warning(
+                    "provenance_not_a_dict", record_id=record_id, value_type=type(prov).__name__
+                )
+                return {}
             # Ensure values are dicts
-            if isinstance(prov, dict):
-                for k, v in list(prov.items()):
-                    if isinstance(v, str):
-                        prov[k] = {"raw": v}
+            for k, v in list(prov.items()):
+                if isinstance(v, str):
+                    prov[k] = {"raw": v}
             return prov
         except Exception as e:
             log.error("provenance_parse_error", record_id=record_id, error=str(e))
             return {}
 
 
+def filter_unresolved_records(records: list[Record]) -> list[Record]:
+    """
+    Filter records to exclude those already resolved with non-empty candidates in pdf_resolutions.
+    Records with empty candidate lists will NOT be skipped (they will be re-resolved).
+    """
+    log.debug("filter_unresolved_records_start", total_input=len(records))
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        unresolved = []
+        checked = 0
+        skipped = 0
+        for rec in records:
+            checked += 1
+            cursor.execute("SELECT candidates FROM pdf_resolutions WHERE record_id = ?", (rec.id,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                try:
+                    candidates = json.loads(row[0])
+                    if candidates:  # If candidates list is not empty
+                        skipped += 1
+                        log.debug(
+                            "record_skipped_already_resolved",
+                            record_id=rec.id,
+                            candidate_count=len(candidates),
+                        )
+                        continue  # Already resolved with candidates, skip
+                except json.JSONDecodeError:
+                    log.warning("invalid_candidates_json_for_record", record_id=rec.id)
+                    # If invalid JSON, treat as not resolved
+            unresolved.append(rec)
+
+    log.info(
+        "filter_unresolved_records_completed",
+        total_checked=checked,
+        total_skipped=skipped,
+        total_unresolved=len(unresolved),
+    )
+    return unresolved
+
+
+def get_resolved_candidates(record_id: int) -> list[dict]:
+    """
+    Retrieve the most recent resolved PDF candidates for a record.
+
+    Args:
+        record_id: ID of the record
+
+    Returns:
+        List of PDF candidate dictionaries, or empty list if no resolution found
+    """
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT candidates 
+            FROM pdf_resolutions 
+            WHERE record_id = ? 
+            """,
+            (record_id,),
+        )
+        row = cursor.fetchone()
+
+        if row and row[0]:
+            try:
+                candidates = json.loads(row[0])
+                log.debug(
+                    "resolved_candidates_retrieved",
+                    record_id=record_id,
+                    candidate_count=len(candidates),
+                )
+                return candidates
+            except json.JSONDecodeError:
+                log.warning("invalid_candidates_json_for_record", record_id=record_id)
+                return []
+
+        log.debug("no_resolved_candidates_found", record_id=record_id)
+        return []
+
+
 def insert_pdf_resolution(
     record_id: int,
     candidates: list[dict],
-    timestamp: str,
-    filtering_query_id: int | None = None,
-) -> int:
+    resolution_datetime: str,
+) -> int | None:
     """
-    Store PDF resolution candidates for a record.
+    Store or update PDF resolution candidates for a record.
+    If a resolution already exists for the record_id, it will be updated.
 
     Args:
         record_id: ID of the record
         candidates: List of PDF candidate dictionaries
         timestamp: ISO format timestamp
-        filtering_query_id: Optional filtering query ID
 
     Returns:
-        ID of the inserted resolution record
+        ID of the inserted or updated resolution record
     """
     with get_conn() as conn:
         cur = conn.cursor()
+        
+        # Check if resolution already exists for this record
         cur.execute(
-            """
-            INSERT INTO pdf_resolutions 
-            (record_id, filtering_query_id, timestamp, candidates)
-            VALUES (?, ?, ?, ?)
-            """,
-            (record_id, filtering_query_id, timestamp, json.dumps(candidates)),
+            "SELECT id FROM pdf_resolutions WHERE record_id = ?",
+            (record_id,)
         )
-        resolution_id = cur.lastrowid
-        conn.commit()
+        existing_row = cur.fetchone()
+        
+        if existing_row:
+            # Update existing resolution
+            resolution_id = existing_row[0]
+            cur.execute(
+                """
+                UPDATE pdf_resolutions 
+                SET resolution_datetime = ?, candidates = ?
+                WHERE id = ?
+                """,
+                (resolution_datetime, json.dumps(candidates), resolution_id),
+            )
+            conn.commit()
+            log.debug(
+                "pdf_resolution_updated",
+                resolution_id=resolution_id,
+                record_id=record_id,
+                candidate_count=len(candidates),
+            )
+        else:
+            # Insert new resolution
+            cur.execute(
+                """
+                INSERT INTO pdf_resolutions 
+                (record_id, resolution_datetime, candidates)
+                VALUES (?, ?, ?)
+                """,
+                (record_id, resolution_datetime, json.dumps(candidates)),
+            )
+            resolution_id = cur.lastrowid
+            conn.commit()
+            log.debug(
+                "pdf_resolution_inserted",
+                resolution_id=resolution_id,
+                record_id=record_id,
+                candidate_count=len(candidates),
+            )
+        
+        return resolution_id
 
-    log.debug(
-        "pdf_resolution_inserted",
-        resolution_id=resolution_id,
-        record_id=record_id,
-        candidate_count=len(candidates),
-    )
-    return resolution_id
 
-
-def insert_pdf_download(
+def record_pdf_download_attempt(
     record_id: int,
     url: str,
     source: str,
     status: str,
-    timestamp: str,
-    filtering_query_id: int | None = None,
+    download_attempt_datetime: str,
     pdf_local_path: str | None = None,
     sha1: str | None = None,
     final_url: str | None = None,
     error_message: str | None = None,
-) -> int:
+) -> int | None:
     """
-    Store PDF download attempt result.
+    Store or update PDF download attempt result.
+    If a download attempt already exists for the record_id, it will be updated.
 
     Args:
         record_id: ID of the record
         url: URL attempted
         source: Source of the PDF (unpaywall, arxiv, etc.)
         status: Status (downloaded, unavailable, too_large, error)
-        timestamp: ISO format timestamp
-        filtering_query_id: Optional filtering query ID
+        download_attempt_datetime: ISO format download_attempt_datetime
         pdf_local_path: Local path if downloaded
         sha1: SHA1 hash if downloaded
         final_url: Final URL after redirects
         error_message: Error message if failed
 
     Returns:
-        ID of the inserted download record
+        ID of the inserted or updated download record
     """
     with get_conn() as conn:
         cur = conn.cursor()
+        
+        # Check if download attempt already exists for this record
         cur.execute(
-            """
-            INSERT INTO pdf_downloads 
-            (record_id, filtering_query_id, timestamp, url, source, status,
-             pdf_local_path, sha1, final_url, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                filtering_query_id,
-                timestamp,
-                url,
-                source,
-                status,
-                pdf_local_path,
-                sha1,
-                final_url,
-                error_message,
-            ),
+            "SELECT id FROM pdf_downloads WHERE record_id = ? ORDER BY id DESC LIMIT 1",
+            (record_id,)
         )
-        download_id = cur.lastrowid
-        conn.commit()
-
-    log.debug(
-        "pdf_download_inserted",
-        download_id=download_id,
-        record_id=record_id,
-        status=status,
-    )
-    return download_id
+        existing_row = cur.fetchone()
+        
+        if existing_row:
+            # Update existing download attempt
+            download_id = existing_row[0]
+            cur.execute(
+                """
+                UPDATE pdf_downloads 
+                SET download_attempt_datetime = ?, url = ?, source = ?, status = ?,
+                    pdf_local_path = ?, sha1 = ?, final_url = ?, error_message = ?
+                WHERE id = ?
+                """,
+                (
+                    download_attempt_datetime,
+                    url,
+                    source,
+                    status,
+                    pdf_local_path,
+                    sha1,
+                    final_url,
+                    error_message,
+                    download_id,
+                ),
+            )
+            conn.commit()
+            log.debug(
+                "pdf_download_trial_updated",
+                download_id=download_id,
+                record_id=record_id,
+                status=status,
+            )
+        else:
+            # Insert new download attempt
+            cur.execute(
+                """
+                INSERT INTO pdf_downloads 
+                (record_id, download_attempt_datetime, url, source, status,
+                 pdf_local_path, sha1, final_url, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record_id,
+                    download_attempt_datetime,
+                    url,
+                    source,
+                    status,
+                    pdf_local_path,
+                    sha1,
+                    final_url,
+                    error_message,
+                ),
+            )
+            download_id = cur.lastrowid
+            conn.commit()
+            log.debug(
+                "pdf_download_trial_inserted",
+                download_id=download_id,
+                record_id=record_id,
+                status=status,
+            )
+        
+        return download_id
 
 
 def get_pdf_download_stats(filtering_query_id: int | None = None) -> dict:
@@ -765,10 +911,11 @@ def get_pdf_download_stats(filtering_query_id: int | None = None) -> dict:
         if filtering_query_id:
             cur.execute(
                 """
-                SELECT status, COUNT(*) as count
-                FROM pdf_downloads
-                WHERE filtering_query_id = ?
-                GROUP BY status
+                SELECT d.status, COUNT(*) as count
+                FROM pdf_downloads d
+                JOIN records_filterings rf ON d.record_id = rf.record_id
+                WHERE rf.filtering_query_id = ?
+                GROUP BY d.status
                 """,
                 (filtering_query_id,),
             )
@@ -782,3 +929,54 @@ def get_pdf_download_stats(filtering_query_id: int | None = None) -> dict:
             )
         rows = cur.fetchall()
         return {row[0]: row[1] for row in rows}
+
+
+def filter_already_downloaded_records(records: list[Record]) -> list[Record]:
+    """
+    Filter records to exclude those already successfully downloaded.
+    Records with failed or no download attempts will NOT be skipped (they will be re-attempted).
+    
+    Args:
+        records: List of records to check
+        
+    Returns:
+        List of records that haven't been successfully downloaded yet
+    """
+    log.debug("filter_already_downloaded_records_start", total_input=len(records))
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        records_needing_download = []
+        checked = 0
+        skipped = 0
+        
+        for rec in records:
+            checked += 1
+            cursor.execute(
+                """
+                SELECT COUNT(*) 
+                FROM pdf_downloads 
+                WHERE record_id = ? AND status = 'downloaded'
+                """,
+                (rec.id,)
+            )
+            row = cursor.fetchone()
+            
+            if row and row[0] > 0:
+                # Record already has a successful download
+                skipped += 1
+                log.debug(
+                    "record_skipped_already_downloaded",
+                    record_id=rec.id,
+                    doi=rec.doi_norm,
+                )
+                continue
+            
+            records_needing_download.append(rec)
+    
+    log.info(
+        "filter_already_downloaded_records_completed",
+        total_checked=checked,
+        total_skipped=skipped,
+        total_needing_download=len(records_needing_download),
+    )
+    return records_needing_download

@@ -3,8 +3,10 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import IntegrityError
+from typing import Any
 
 import pandas as pd
+import structlog
 import typer
 from dotenv import load_dotenv
 
@@ -13,14 +15,17 @@ from .core.store import (
     DB_PATH,
     batch_insert_filtering_results,
     create_filtering_query,
+    filter_already_downloaded_records,
+    filter_unresolved_records,
     get_matched_records_by_filtering_query,
     get_pdf_download_stats,
     get_record_provenance,
     get_records,
+    get_resolved_candidates,
     init_db,
-    insert_pdf_download,
     insert_pdf_resolution,
     insert_record,
+    record_pdf_download_attempt,
     update_enrichment_record,
     update_filtering_query_stats,
 )
@@ -37,7 +42,7 @@ from .utils.provenance import formatted_provenance
 load_dotenv()
 
 # Global state for logging configuration
-_log_state = {
+_log_state: dict[str, Any] = {
     "session_id": datetime.now().strftime("%Y%m%d_%H%M%S"),
     "log_file": None,
     "logger": None,
@@ -52,7 +57,7 @@ def callback(
         False, "--quiet", "-q", help="Suppress console log output (logs still written to file)"
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose (DEBUG) logging"),
-):
+) -> None:
     """Initialize application with structured logging."""
     # Determine log level
     log_level = "DEBUG" if verbose else os.getenv("LOG_LEVEL", "INFO")
@@ -76,7 +81,7 @@ def callback(
         )
 
 
-def _get_logger():
+def _get_logger() -> structlog.BoundLogger | Any:
     """Get the application logger."""
     if _log_state["logger"] is None:
         # Fallback: initialize with defaults
@@ -91,7 +96,7 @@ session_id = _log_state["session_id"]
 
 
 @app.command()
-def import_(path: Path):
+def import_(path: Path) -> None:
     """Import CSV/XLSX into DB or memory, normalize DOIs."""
     log.info("import_started", path=str(path))
     init_db()
@@ -110,15 +115,23 @@ def import_(path: Path):
             else:
                 # Re-raise other IntegrityErrors if not related to doi_norm
                 raise
-    log.info("import_completed", record_count=len(records), inserted_count=inserted_count, skipped_count=skipped_count, path=str(path))
-    typer.echo(f"Imported {inserted_count} research articles from {path} (skipped {skipped_count} duplicates)")
+    log.info(
+        "import_completed",
+        record_count=len(records),
+        inserted_count=inserted_count,
+        skipped_count=skipped_count,
+        path=str(path),
+    )
+    typer.echo(
+        f"Imported {inserted_count} research articles from {path} (skipped {skipped_count} duplicates)"
+    )
 
 
 @app.command()
 def enrich(
     sources: str = typer.Option("unpaywall,crossref,openalex", help="Comma-separated sources"),
     max_workers: int = 8,
-):
+) -> None:
     """Enrich research articles with abstracts and OA info."""
     log.info("enrich_started", sources=sources, max_workers=max_workers)
     records = get_records()
@@ -129,9 +142,9 @@ def enrich(
         typer.echo("No research articles found to enrich.")
         return
 
-    clients = {}  # In production, pass API clients as needed
+    clients: dict[str, Any] = {}  # In production, pass API clients as needed
 
-    async def enrich_all(enrichment_datetime):
+    async def enrich_all(enrichment_datetime: str) -> None:
         tasks = [enrich_record(rec, clients) for rec in records]
         enriched = await asyncio.gather(*tasks)
         for rec in enriched:
@@ -145,7 +158,7 @@ def enrich(
     typer.echo(f"Enriched {len(records)} research articles.")
 
 
-def export_records(records: list[Record], export_path, format="parquet"):
+def export_records(records: list[Record], export_path: Path, format: str = "parquet") -> None:
     """Export records to the specified file format."""
     df = pd.DataFrame([rec.model_dump() for rec in records])
     if format == "parquet":
@@ -159,7 +172,7 @@ def export_records(records: list[Record], export_path, format="parquet"):
 
 
 @app.command()
-def provenance(record_id: int):
+def provenance(record_id: int) -> None:
     """Show provenance information for a record by ID."""
     init_db()
     prov = get_record_provenance(record_id)
@@ -175,7 +188,7 @@ def filter(
     export_path: Path | None = typer.Option(  # noqa: B008
         None, "--export", "-e", help="Optional export path for filtered records"
     ),
-):
+) -> None:
     """Filter research articles by querying OpenAI's LLM for relevance using async parallelized calls.
 
     Results are stored in the database (filtering_queries and records_filterings tables, referencing research_articles).
@@ -231,7 +244,7 @@ def filter(
     typer.echo(f"Using model: {model_name} (max concurrent: {max_concurrent})")
     typer.echo("Progress: 0%", nl=False)
 
-    def progress_callback(completed: int, total: int):
+    def progress_callback(completed: int, total: int) -> None:
         """Update progress in the terminal."""
         percent = int((completed / total) * 100)
         typer.echo(f"\rProgress: {percent}% ({completed}/{total})", nl=False)
@@ -337,7 +350,7 @@ def pdfs(
     ),
     dest: Path | None = typer.Option(None, "--dest", "-d", help="Destination directory for PDFs"),  # noqa: B008
     max_concurrent: int = typer.Option(5, help="Maximum concurrent downloads"),
-):
+) -> None:
     """Download OA PDFs for matched records from a filtering query.
 
     Resolves PDF candidates and attempts downloads, storing results in database.
@@ -359,55 +372,111 @@ def pdfs(
 
     # Get matched records from filtering query
     typer.echo(f"\nFetching matched records from filtering query {filtering_query_id}...")
-    records = get_matched_records_by_filtering_query(filtering_query_id)
+    matched_filtering_query_records = get_matched_records_by_filtering_query(filtering_query_id)
 
-    if not records:
+    if not matched_filtering_query_records:
         log.warning("no_matched_records_found", filtering_query_id=filtering_query_id)
         typer.echo("No matched records found for this filtering query.")
         return
 
-    typer.echo(f"Found {len(records)} matched records to process.")
+    typer.echo(f"Found {len(matched_filtering_query_records)} matched records to process.")
     typer.echo(f"Destination: {dest}")
-    typer.echo("\nResolving PDF candidates and downloading...")
+
+    # Separate unresolved records (need resolution) from already resolved records
+    unresolved_records = filter_unresolved_records(matched_filtering_query_records)
+    already_resolved_count = len(matched_filtering_query_records) - len(unresolved_records)
+
+    log.info(
+        "pdf_resolution_status",
+        total_records=len(matched_filtering_query_records),
+        unresolved_count=len(unresolved_records),
+        already_resolved_count=already_resolved_count,
+    )
+
+    typer.echo(f"  Already resolved: {already_resolved_count} records")
+    typer.echo(f"  Need resolution: {len(unresolved_records)} records")
+
+    # PHASE 1: Resolve PDF candidates for unresolved records only
+    if unresolved_records:
+        typer.echo("\n[Phase 1] Resolving PDF candidates for unresolved records...")
+
+        resolved_count = 0
+        no_candidates_count = 0
+
+        for rec in unresolved_records:
+            # Resolve PDF candidates
+            candidates = resolve_pdf_candidates(rec)
+
+            # Store resolution in database
+            insert_pdf_resolution(
+                record_id=rec.id,
+                candidates=candidates,
+                resolution_datetime=timestamp,
+            )
+
+            if candidates:
+                resolved_count += 1
+                log.debug(
+                    "pdf_candidates_resolved",
+                    record_id=rec.id,
+                    doi=rec.doi_norm,
+                    candidate_count=len(candidates),
+                )
+            else:
+                no_candidates_count += 1
+                log.debug("no_pdf_candidates", record_id=rec.id, doi=rec.doi_norm)
+
+        log.info(
+            "pdf_resolution_completed",
+            total_resolved=resolved_count,
+            no_candidates=no_candidates_count,
+        )
+
+        typer.echo(f"  Resolved with candidates: {resolved_count}")
+        typer.echo(f"  No candidates found: {no_candidates_count}")
+    else:
+        typer.echo("\n[Phase 1] Skipped - all records already resolved")
+
+    # PHASE 2: Download PDFs for records that haven't been successfully downloaded yet
+    typer.echo("\n[Phase 2] Downloading PDFs from resolved candidates, if not already downloaded...")
+
+    # Filter records to only those not already downloaded
+    records_needing_download = filter_already_downloaded_records(matched_filtering_query_records)
+    already_downloaded_count = len(matched_filtering_query_records) - len(records_needing_download)
+
+    log.info(
+        "pdf_download_filtering",
+        total_records=len(matched_filtering_query_records),
+        already_downloaded=already_downloaded_count,
+        needs_download=len(records_needing_download),
+    )
+
+    typer.echo(f"  Already downloaded: {already_downloaded_count} records")
+    typer.echo(f"  Need download: {len(records_needing_download)} records")
 
     # Statistics
     downloaded_count = 0
     unavailable_count = 0
     too_large_count = 0
     error_count = 0
-    no_candidates_count = 0
+    no_candidates_for_download = 0
 
-    # Process each record
-    async def process_record(rec: Record):
-        nonlocal \
-            downloaded_count, \
-            unavailable_count, \
-            too_large_count, \
-            error_count, \
-            no_candidates_count
+    # Process each record for download
+    async def download_record_pdf(rec: Record) -> None:
+        nonlocal downloaded_count, unavailable_count, too_large_count, error_count, no_candidates_for_download
 
-        # Resolve PDF candidates
-        candidates = resolve_pdf_candidates(rec)
-
-        # Store resolution in database
-        insert_pdf_resolution(
-            record_id=rec.id,
-            candidates=candidates,
-            timestamp=timestamp,
-            filtering_query_id=filtering_query_id,
-        )
-
+        # Retrieve resolved candidates from database
+        candidates = get_resolved_candidates(rec.id)
         if not candidates:
-            no_candidates_count += 1
-            log.debug("no_pdf_candidates", record_id=rec.id, doi=rec.doi_norm)
-            # Store a "no candidates" record
-            insert_pdf_download(
+            no_candidates_for_download += 1
+            log.debug("no_pdf_candidates_for_download", record_id=rec.id, doi=rec.doi_norm)
+            # Store a "no candidates" download record
+            record_pdf_download_attempt(
                 record_id=rec.id,
                 url="",
                 source="none",
                 status="no_candidates",
-                timestamp=timestamp,
-                filtering_query_id=filtering_query_id,
+                download_attempt_datetime=timestamp,
                 error_message="No PDF candidates found",
             )
             return
@@ -438,13 +507,12 @@ def pdfs(
                         )
 
                     # Store successful download attempt, prefer the renamed path when available
-                    insert_pdf_download(
+                    record_pdf_download_attempt(
                         record_id=rec.id,
                         url=cand.get("url", ""),
                         source=cand.get("source", "unknown"),
                         status=status,
-                        timestamp=timestamp,
-                        filtering_query_id=filtering_query_id,
+                        download_attempt_datetime=timestamp,
                         pdf_local_path=final_path_str or result.get("path"),
                         sha1=result.get("sha1"),
                         final_url=result.get("final_url"),
@@ -463,13 +531,12 @@ def pdfs(
                     break
 
                 # Non-downloaded statuses: record attempt as-is
-                insert_pdf_download(
+                record_pdf_download_attempt(
                     record_id=rec.id,
                     url=cand.get("url", ""),
                     source=cand.get("source", "unknown"),
                     status=status,
-                    timestamp=timestamp,
-                    filtering_query_id=filtering_query_id,
+                    download_attempt_datetime=timestamp,
                     pdf_local_path=result.get("path"),
                     sha1=result.get("sha1"),
                     final_url=result.get("final_url"),
@@ -493,32 +560,34 @@ def pdfs(
                     error=str(e),
                 )
                 # Store error
-                insert_pdf_download(
+                record_pdf_download_attempt(
                     record_id=rec.id,
                     url=cand.get("url", ""),
                     source=cand.get("source", "unknown"),
                     status="error",
-                    timestamp=timestamp,
-                    filtering_query_id=filtering_query_id,
+                    download_attempt_datetime=timestamp,
                     error_message=str(e),
                 )
 
         if not download_success:
             log.debug("pdf_all_attempts_failed", record_id=rec.id, doi=rec.doi_norm)
 
-    # Process records with concurrency limit
-    async def process_all_records():
+    # Process only records needing download with concurrency limit
+    async def process_all_downloads() -> None:
         semaphore = asyncio.Semaphore(max_concurrent)
 
-        async def process_with_semaphore(rec: Record):
+        async def download_with_semaphore(rec: Record) -> None:
             async with semaphore:
-                await process_record(rec)
+                await download_record_pdf(rec)
 
-        tasks = [process_with_semaphore(rec) for rec in records]
+        tasks = [download_with_semaphore(rec) for rec in records_needing_download]
         await asyncio.gather(*tasks)
 
-    # Run processing
-    asyncio.run(process_all_records())
+    # Run download processing only for records that need it
+    if records_needing_download:
+        asyncio.run(process_all_downloads())
+    else:
+        typer.echo("  All matched records already have PDFs downloaded. Skipping download phase.")
 
     # Get final statistics from database
     stats = get_pdf_download_stats(filtering_query_id)
@@ -526,15 +595,16 @@ def pdfs(
     log.info(
         "pdf_download_completed",
         filtering_query_id=filtering_query_id,
-        total_records=len(records),
+        total_records=len(matched_filtering_query_records),
         stats=stats,
         destination=str(dest),
     )
 
     # Display results
     typer.echo("\nPDF Download Results:")
-    typer.echo(f"  Total records processed: {len(records)}")
-    typer.echo(f"  Successfully downloaded: {stats.get('downloaded', 0)}")
+    typer.echo(f"  Total records processed: {len(matched_filtering_query_records)}")
+    typer.echo(f"  Already downloaded (skipped): {already_downloaded_count}")
+    typer.echo(f"  Successfully downloaded (new): {downloaded_count}")
     typer.echo(f"  No candidates found: {stats.get('no_candidates', 0)}")
     typer.echo(f"  Unavailable: {stats.get('unavailable', 0)}")
     typer.echo(f"  Too large: {stats.get('too_large', 0)}")
@@ -544,7 +614,7 @@ def pdfs(
 
 
 @app.command()
-def export(from_: Path | None = None, format: str = "xlsx"):
+def export(from_: Path | None = None, format: str = "xlsx") -> None:
     """Export results with rationale and clickable links."""
     log.info("export_started", source=str(from_), format=format)
 

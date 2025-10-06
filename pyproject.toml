@@ -39,6 +39,7 @@ dev = [
   { include-group = "lint" },
   { include-group = "test" },
   { include-group = "types" },
+  "pandas-stubs>=2.3.2.250926",
 ]
 
 lint = [
@@ -72,22 +73,36 @@ build-backend = "uv_build"
 # --- Tools configuration ---
 [tool.ruff]
 line-length = 100
+exclude = [".venv", "tests/data/fixtures"]
+target-version = "py311"
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "T20", "SIM", "RUF"]
 ignore = ["E501"]
-exclude = [".venv", "tests/data/fixtures"]
 
 [tool.mypy]
 python_version = "3.11"
-strict = false
+strict = true
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
-ignore_missing_imports = true
-exclude = 'tests/data/fixtures'
+ignore_missing_imports = false
+check_untyped_defs = true
+# exclude = 'tests/data/fixtures'
 plugins = []
+mypy_path = ["src"]                # make 'src' the only package root
+explicit_package_bases = true      # works well with src-layout
+files = ["src", "tests"]
+
+# # 2. Tell Mypy to treat the directories listed in mypy_path as top-level package roots.
+# explicit_package_bases = true
+
+# # 3. (Optional but good practice) Specify which files/directories to check
+# files = ["src/llm_query_doc_analyser", "tests"] 
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"
 testpaths = ["tests"]
+pythonpath = ["src"]

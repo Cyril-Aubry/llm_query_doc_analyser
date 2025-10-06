@@ -89,7 +89,7 @@ llm_query_doc_analyser/
 - `pydantic`: data validation
 - `typer`: CLI interface
 - `pytest`, `pytest-asyncio`, `pytest-cov`, `respx`: testing
-- `loguru`, `structlog`: logging
+- `structlog`: logging
 - `python-dotenv`: configuration
 - `tenacity`: retry logic
 - `rapidfuzz`, `rank-bm25`, `sentence-transformers`, `faiss-cpu`: semantic filtering

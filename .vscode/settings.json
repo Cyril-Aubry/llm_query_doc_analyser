@@ -1,7 +1,7 @@
 {
-    "mypy.dmypyExecutable": "${workspaceFolder}/.venv/Scripts/dmypy.exe",
+    "mypy.dmypyExecutable": "",
     "mypy.envFile": "",
-    "mypy.mypyExecutable": "${workspaceFolder}/.venv/Scripts/mypy.exe",
+    "mypy.mypyExecutable": "",
     "mypy.runUsingActiveInterpreter": true,
     "cSpell.words": [
         "analyser",
@@ -23,5 +23,7 @@
     "cSpell.ignoreWords": [
         "filterings",
         "pmid"
-    ]
+    ],
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "python.languageServer": "Pylance"
 }

@@ -102,14 +102,18 @@ Repeat this loop:
 ## 7. Keep track of progress
 
 ### Version 1
-- [v] Rename records table to research_articles in the whole project
-- [V] Clean-up records database fields, deleting unused and moving some to the adequate tables
-- [V] Add a unique constraint on the DOI field of the research_articles table
-- [V] Implemented IntegrityError catch and notification of skipped import for user
-- [V] Added an import_datetime and enrichment datetime for each record importation and enrichment
-- [V] Excluded enrichment of records having a enrichment_datetime value
-- [V] Refactors filtering query timestamp handling. Renames filtering query timestamp fields to clarify their meaning and removes redundant timestamp storage from filter results.
-- []
+- [✓] Rename records table to research_articles in the whole project
+- [✓] Clean-up records database fields, deleting unused and moving some to the adequate tables
+- [✓] Add a unique constraint on the DOI field of the research_articles table
+- [✓] Implemented IntegrityError catch and notification of skipped import for user
+- [✓] Added an import_datetime and enrichment datetime for each record importation and enrichment
+- [✓] Excluded enrichment of records having a enrichment_datetime value
+- [✓] Refactors filtering query timestamp handling. Renames filtering query timestamp fields to clarify their meaning and removes redundant timestamp storage from filter results.
+- [✓] Excluded download of pdf having a download status value in the pdf_downloads table
+- [✓] Implemented a enrichment record report to be displayed in the command line. Could be revised to be part of logging with some command line display.
+- [ ] <span style="color:red;">**Started a check/search of pre-print published version that needs to be completed. Some functions and database table already in place but has to be adapted to the updated pipeline.**</span>
+- [&check;] Enrichment updated to retrieve maximum information from preprint (for preprint records) and other web services for any record. Need to refactor the pipeline to incorporate better structure/architecture using design pattern
+- [ ] Implemented some tests which have to be checked and completed
 
 ---
 

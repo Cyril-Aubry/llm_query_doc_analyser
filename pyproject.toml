@@ -109,3 +109,4 @@ addopts = "-q --strict-markers"
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = ["integration: mark integration tests that require external resources (database, network, etc.)"]

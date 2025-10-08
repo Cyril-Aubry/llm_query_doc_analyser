@@ -45,7 +45,7 @@
   - `uv run pytest`
 
 ## Integration Points
-- **APIs:** Crossref, Unpaywall, OpenAlex, EuropePMC, PubMed, Semantic Scholar (optional), OpenAI (optional)
+- **APIs:** Crossref, Unpaywall, OpenAlex, EuropePMC, PubMed, Semantic Scholar (optional), OpenAI
 - **Dependencies:** See `pyproject.toml` for full list. Key: `pandas`, `httpx[http2]`, `pydantic`, `typer`, `structlog`, `tenacity`, `rapidfuzz`, `rank-bm25`, `sentence-transformers`, `faiss-cpu`, `pypdf`, `openai`, `spacy`, `nltk`.
 
 ## Examples & References

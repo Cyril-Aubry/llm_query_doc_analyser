@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.models import Record
+from ..utils.http import RateLimiter
 from ..utils.log import get_logger
 from .crossref import fetch_crossref
 from .europepmc import fetch_europepmc
@@ -16,6 +17,19 @@ from .unpaywall import fetch_unpaywall
 from .version_linking import process_preprint_to_published_linking
 
 log = get_logger(__name__)
+
+# Global rate limiters for different APIs (calls per second)
+# ArXiv recommends 1 call per 3 seconds = 0.33 calls/sec
+RATE_LIMITERS = {
+    "arxiv": RateLimiter(calls_per_second=0.33),
+    "crossref": RateLimiter(calls_per_second=1.0),  # Polite rate
+    "openalex": RateLimiter(calls_per_second=5.0),  # No strict limit but be polite
+    "europepmc": RateLimiter(calls_per_second=2.0),  # Be polite
+    "pubmed": RateLimiter(calls_per_second=3.0),  # NCBI guideline without API key
+    "s2": RateLimiter(calls_per_second=5.0),  # With API key can be higher
+    "unpaywall": RateLimiter(calls_per_second=5.0),  # Be polite
+    "preprints": RateLimiter(calls_per_second=2.0),  # General preprint sources
+}
 
 
 def extract_arxiv_id(rec: Record) -> None:
@@ -123,7 +137,7 @@ class AbstractEnrichmentPipeline:
         clients: dict[str, Any]
     ) -> EnrichmentResult:
         """
-        Try to fetch abstract from a single source.
+        Try to fetch abstract from a single source with rate limiting.
         
         Parameters:
         rec (Record): The record to enrich.
@@ -134,6 +148,11 @@ class AbstractEnrichmentPipeline:
         EnrichmentResult: Result of the enrichment attempt.
         """
         try:
+            # Apply rate limiting before API call
+            rate_limiter = RATE_LIMITERS.get(source.key)
+            if rate_limiter:
+                await rate_limiter.acquire()
+            
             # Handle sources that require client parameter
             if source.requires_client:
                 data, raw = await source.fetcher(rec, clients.get(source.key))
@@ -209,6 +228,11 @@ class PreprintEnricher:
         preprint_source = rec.preprint_source
         if not preprint_source:
             return report
+        
+        # Apply rate limiting before fetching preprint metadata
+        rate_limiter = RATE_LIMITERS.get("preprints")
+        if rate_limiter:
+            await rate_limiter.acquire()
         
         # Fetch preprint metadata
         preprint_data, preprint_raw = await fetch_preprint_metadata(rec, preprint_source)
@@ -300,6 +324,11 @@ class OpenAccessEnricher:
         Returns:
         tuple: (OA report dict, raw provenance data)
         """
+        # Apply rate limiting before fetching unpaywall data
+        rate_limiter = RATE_LIMITERS.get("unpaywall")
+        if rate_limiter:
+            await rate_limiter.acquire()
+        
         upw, upw_raw = await fetch_unpaywall(rec)
         
         if upw:
@@ -491,10 +520,31 @@ async def enrich_record(rec: Record, clients: dict[str, Any]) -> Record:
         all_provenance["unpaywall"] = oa_provenance
     rec.provenance.update(all_provenance)
 
-    # Step 6: Generate final status summary
+    # Step 6: Generate final status summary and track abstract retrieval failure reasons
+    if not rec.abstract_text:
+        # Compile reasons why abstract wasn't retrieved
+        failure_reasons = []
+        for attempt in enrichment_report["abstract_attempts"]:
+            if attempt["status"] == "failed":
+                failure_reasons.append(f"{attempt['source']}: {attempt['reason']}")
+        
+        if failure_reasons:
+            rec.abstract_no_retrieval_reason = "; ".join(failure_reasons)
+        else:
+            rec.abstract_no_retrieval_reason = "No enrichment sources attempted"
+        
+        log.warning(
+            "abstract_not_retrieved",
+            doi=rec.doi_norm,
+            reasons=rec.abstract_no_retrieval_reason,
+        )
+    else:
+        rec.abstract_no_retrieval_reason = None  # Clear if abstract was found
+    
     enrichment_report["final_status"] = {
         "abstract_found": bool(rec.abstract_text),
         "abstract_source": rec.abstract_source if rec.abstract_text else None,
+        "abstract_no_retrieval_reason": rec.abstract_no_retrieval_reason,
         "is_oa": rec.is_oa,
         "oa_status": rec.oa_status,
         "is_preprint": rec.is_preprint,
@@ -510,6 +560,7 @@ async def enrich_record(rec: Record, clients: dict[str, Any]) -> Record:
         doi=rec.doi_norm,
         has_abstract=bool(rec.abstract_text),
         abstract_source=rec.abstract_source,
+        abstract_no_retrieval_reason=rec.abstract_no_retrieval_reason,
         is_oa=rec.is_oa,
         oa_status=rec.oa_status,
         is_preprint=rec.is_preprint,
@@ -584,6 +635,8 @@ def format_enrichment_report(rec: Record) -> str:
         lines.append(f"  • Abstract: ✓ (from {final['abstract_source']})")
     else:
         lines.append("  • Abstract: ✗ (not found from any source)")
+        if final.get("abstract_no_retrieval_reason"):
+            lines.append(f"    Reason: {final['abstract_no_retrieval_reason']}")
 
     if final["is_preprint"]:
         lines.append(f"  • Preprint: ✓ ({final['preprint_source']})")

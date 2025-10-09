@@ -77,10 +77,11 @@ build-backend = "uv_build"
 line-length = 100
 exclude = [".venv", "tests/data/fixtures"]
 target-version = "py311"
+# extend-ignore = ["T201"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "T20", "SIM", "RUF"]
-ignore = ["E501"]
+ignore = ["E501","T201"]
 
 [tool.mypy]
 python_version = "3.11"

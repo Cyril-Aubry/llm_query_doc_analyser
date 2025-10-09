@@ -23,6 +23,7 @@ class Record(BaseModel):
     enrichment_datetime: str | None = None
     abstract_text: str | None = None
     abstract_source: str | None = None  # 's2'|'crossref'|'openalex'|'epmc'|'pubmed'
+    abstract_no_retrieval_reason: str | None = None  # Reason why abstract was not retrieved
 
     # External IDs
     pmid: str | None = None

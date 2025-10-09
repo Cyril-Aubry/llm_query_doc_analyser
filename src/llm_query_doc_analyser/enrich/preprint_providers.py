@@ -76,8 +76,23 @@ async def _fetch_arxiv_metadata(
 
     try:
         async with get_client() as client:
-            resp = await client.get(url, timeout=10.0)
-            resp.raise_for_status()
+            from ..utils.http import get_with_retry
+            
+            resp = await get_with_retry(
+                url,
+                headers={"User-Agent": "llm_query_doc_analyser/1.0"},
+                timeout=15.0,
+                client=client,
+            )
+
+            if resp.status_code != 200:
+                log.warning(
+                    "arxiv_preprint_non_200",
+                    arxiv_id=arxiv_id,
+                    status=resp.status_code,
+                    url=url,
+                )
+                return None, None
 
             # Parse XML response
             root = ET.fromstring(resp.text)
@@ -127,8 +142,17 @@ async def _fetch_arxiv_metadata(
 
             return parsed, raw_response
 
-    except (httpx.HTTPError, ET.ParseError) as e:
-        log.error("arxiv_fetch_failed", arxiv_id=arxiv_id, error=str(e))
+    except httpx.TimeoutException as e:
+        log.error("arxiv_preprint_timeout", arxiv_id=arxiv_id, url=url, error=str(e))
+        return None, None
+    except httpx.HTTPError as e:
+        log.error("arxiv_preprint_http_error", arxiv_id=arxiv_id, url=url, error=str(e))
+        return None, None
+    except ET.ParseError as e:
+        log.error("arxiv_preprint_parse_error", arxiv_id=arxiv_id, url=url, error=str(e))
+        return None, None
+    except Exception as e:
+        log.exception("arxiv_preprint_unexpected_error", arxiv_id=arxiv_id, url=url)
         return None, None
 
 
@@ -153,9 +177,35 @@ async def _fetch_biorxiv_medrxiv_metadata(
 
     try:
         async with get_client() as client:
-            resp = await client.get(url, timeout=10.0)
-            resp.raise_for_status()
-            data = resp.json()
+            from ..utils.http import get_with_retry
+            
+            resp = await get_with_retry(
+                url,
+                headers={"User-Agent": "llm_query_doc_analyser/1.0"},
+                timeout=15.0,
+                client=client,
+            )
+            
+            if resp.status_code != 200:
+                log.warning(
+                    "biorxiv_medrxiv_non_200",
+                    doi=doi_clean,
+                    preprint_source=preprint_source,
+                    status=resp.status_code,
+                    url=url,
+                )
+                return None, None
+            
+            try:
+                data = resp.json()
+            except Exception as je:
+                log.error(
+                    "biorxiv_medrxiv_json_parse_error",
+                    doi=doi_clean,
+                    preprint_source=preprint_source,
+                    error=str(je),
+                )
+                return None, None
 
             # API returns a collection
             if not data.get("collection") or len(data["collection"]) == 0:
@@ -198,12 +248,38 @@ async def _fetch_biorxiv_medrxiv_metadata(
 
             return parsed, raw_response
 
-    except (httpx.HTTPError, ValueError) as e:
+    except httpx.TimeoutException as e:
         log.error(
-            "biorxiv_medrxiv_fetch_failed",
+            "biorxiv_medrxiv_timeout",
+            doi=doi_clean,
+            preprint_source=preprint_source,
+            url=url,
+            error=str(e),
+        )
+        return None, None
+    except httpx.HTTPError as e:
+        log.error(
+            "biorxiv_medrxiv_http_error",
+            doi=doi_clean,
+            preprint_source=preprint_source,
+            url=url,
+            error=str(e),
+        )
+        return None, None
+    except ValueError as e:
+        log.error(
+            "biorxiv_medrxiv_value_error",
             doi=doi_clean,
             preprint_source=preprint_source,
             error=str(e),
+        )
+        return None, None
+    except Exception as e:
+        log.exception(
+            "biorxiv_medrxiv_unexpected_error",
+            doi=doi_clean,
+            preprint_source=preprint_source,
+            url=url,
         )
         return None, None
 
@@ -228,9 +304,33 @@ async def _fetch_preprints_org_metadata(
     
     try:
         async with get_client() as client:
-            resp = await client.get(url, timeout=10.0)
-            resp.raise_for_status()
-            data = resp.json()
+            from ..utils.http import get_with_retry
+            
+            resp = await get_with_retry(
+                url,
+                headers={"User-Agent": "llm_query_doc_analyser/1.0"},
+                timeout=15.0,
+                client=client,
+            )
+            
+            if resp.status_code != 200:
+                log.warning(
+                    "preprints_org_non_200",
+                    doi=doi_clean,
+                    status=resp.status_code,
+                    url=url,
+                )
+                return None, None
+            
+            try:
+                data = resp.json()
+            except Exception as je:
+                log.error(
+                    "preprints_org_json_parse_error",
+                    doi=doi_clean,
+                    error=str(je),
+                )
+                return None, None
             
             # Check if we got valid data
             if not data or not isinstance(data, dict):
@@ -270,11 +370,34 @@ async def _fetch_preprints_org_metadata(
             )
             
             return parsed, raw_response
-            
-    except (httpx.HTTPError, ValueError) as e:
+    
+    except httpx.TimeoutException as e:
         log.error(
-            "preprints_org_fetch_failed",
+            "preprints_org_timeout",
+            doi=doi_clean,
+            url=url,
+            error=str(e),
+        )
+        return None, None
+    except httpx.HTTPError as e:
+        log.error(
+            "preprints_org_http_error",
+            doi=doi_clean,
+            url=url,
+            error=str(e),
+        )
+        return None, None
+    except ValueError as e:
+        log.error(
+            "preprints_org_value_error",
             doi=doi_clean,
             error=str(e),
+        )
+        return None, None
+    except Exception as e:
+        log.exception(
+            "preprints_org_unexpected_error",
+            doi=doi_clean,
+            url=url,
         )
         return None, None

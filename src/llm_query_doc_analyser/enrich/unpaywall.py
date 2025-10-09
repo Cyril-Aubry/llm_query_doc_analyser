@@ -17,41 +17,42 @@ async def fetch_unpaywall(rec: Record) -> tuple[dict, Any]:
         return {}, {}
 
     url = f"https://api.unpaywall.org/v2/{rec.doi_norm}?email={email}"
+    headers = {"User-Agent": f"llm_query_doc_analyser/1.0 (mailto:{email})"}
+    
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                url, headers={"User-Agent": f"llm_query_doc_analyser/1.0 (mailto:{email})"}
-            )
+        from ..utils.http import get_with_retry
+        
+        resp = await get_with_retry(url, headers=headers, timeout=15.0)
 
-            if resp.status_code != 200:
-                log.warning(
-                    "unpaywall_non_200",
+        if resp.status_code != 200:
+            log.warning(
+                "unpaywall_non_200",
+                doi=rec.doi_norm,
+                status=resp.status_code,
+                url=url,
+            )
+            data = {}
+        else:
+            try:
+                data = resp.json()
+            except Exception as je:
+                log.error(
+                    "unpaywall_json_error",
                     doi=rec.doi_norm,
                     status=resp.status_code,
                     url=url,
+                    error=str(je),
                 )
                 data = {}
-            else:
-                try:
-                    data = resp.json()
-                except Exception as je:
-                    log.error(
-                        "unpaywall_json_error",
-                        doi=rec.doi_norm,
-                        status=resp.status_code,
-                        url=url,
-                        error=str(je),
-                    )
-                    data = {}
 
-            # Log successful fetch summary
-            if data:
-                log.debug(
-                    "unpaywall_fetched",
-                    doi=rec.doi_norm,
-                    is_oa=data.get("is_oa"),
-                    oa_status=data.get("oa_status"),
-                )
+        # Log successful fetch summary
+        if data:
+            log.debug(
+                "unpaywall_fetched",
+                doi=rec.doi_norm,
+                is_oa=data.get("is_oa"),
+                oa_status=data.get("oa_status"),
+            )
 
     except httpx.TimeoutException as te:
         log.error("unpaywall_timeout", doi=rec.doi_norm, url=url, error=str(te))

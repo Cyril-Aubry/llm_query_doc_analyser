@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS research_articles (
     source_title TEXT,
     abstract_text TEXT,
     abstract_source TEXT,
+    abstract_no_retrieval_reason TEXT,
     pmid TEXT,
     arxiv_id TEXT,
     is_oa INTEGER,
@@ -171,6 +172,7 @@ def insert_record(rec: Record) -> int:
                 source_title,
                 abstract_text,
                 abstract_source,
+                abstract_no_retrieval_reason,
                 pmid,
                 arxiv_id,
                 is_oa,
@@ -185,7 +187,7 @@ def insert_record(rec: Record) -> int:
                 published_journal,
                 published_url,
                 published_fulltext_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.title,
@@ -198,6 +200,7 @@ def insert_record(rec: Record) -> int:
                 rec.source_title,
                 rec.abstract_text,
                 rec.abstract_source,
+                rec.abstract_no_retrieval_reason,
                 rec.pmid,
                 rec.arxiv_id,
                 int(rec.is_oa) if rec.is_oa is not None else None,
@@ -253,6 +256,7 @@ def update_enrichment_record(rec: Record) -> int | None:
             UPDATE research_articles SET
                 abstract_text=?,
                 abstract_source=?,
+                abstract_no_retrieval_reason=?,
                 pmid=?,
                 arxiv_id=?,
                 is_oa=?,
@@ -272,6 +276,7 @@ def update_enrichment_record(rec: Record) -> int | None:
             (
                 rec.abstract_text,
                 rec.abstract_source,
+                rec.abstract_no_retrieval_reason,
                 rec.pmid,
                 rec.arxiv_id,
                 int(rec.is_oa) if rec.is_oa is not None else None,
@@ -312,6 +317,7 @@ def upsert_record(rec: Record) -> int | None:
                 source_title=?,
                 abstract_text=?,
                 abstract_source=?,
+                abstract_no_retrieval_reason=?,
                 pmid=?,
                 arxiv_id=?,
                 is_oa=?,
@@ -337,6 +343,7 @@ def upsert_record(rec: Record) -> int | None:
                 rec.source_title,
                 rec.abstract_text,
                 rec.abstract_source,
+                rec.abstract_no_retrieval_reason,
                 rec.pmid,
                 rec.arxiv_id,
                 int(rec.is_oa) if rec.is_oa is not None else None,
@@ -368,7 +375,8 @@ def upsert_record(rec: Record) -> int | None:
                     authors, 
                     source_title,
                     abstract_text, 
-                    abstract_source, 
+                    abstract_source,
+                    abstract_no_retrieval_reason,
                     pmid, 
                     arxiv_id,
                     is_oa, 
@@ -382,7 +390,7 @@ def upsert_record(rec: Record) -> int | None:
                     published_journal,
                     published_url,
                     published_fulltext_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.title,
@@ -395,6 +403,7 @@ def upsert_record(rec: Record) -> int | None:
                     rec.source_title,
                     rec.abstract_text,
                     rec.abstract_source,
+                    rec.abstract_no_retrieval_reason,
                     rec.pmid,
                     rec.arxiv_id,
                     int(rec.is_oa) if rec.is_oa is not None else None,

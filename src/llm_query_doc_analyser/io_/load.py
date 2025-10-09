@@ -1,11 +1,13 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # Removed deprecated List import
 import pandas as pd
 
 from ..core.hashing import normalize_doi
 from ..core.models import Record
+from ..enrich.preprint_detection import detect_preprint_source
 from ..utils.log import get_logger
 
 log = get_logger(__name__)
@@ -23,7 +25,7 @@ def load_records(path: Path) -> list[Record]:
         raise ValueError("Input must have a 'Title' column.")
     df["doi_norm"] = df["DOI"].apply(normalize_doi) if "DOI" in df.columns else None
 
-    def to_pub_date(val):
+    def to_pub_date(val: datetime | None) -> None | Any | str:
         if pd.isnull(val):
             return None
         if hasattr(val, "isoformat"):
@@ -43,7 +45,7 @@ def load_records(path: Path) -> list[Record]:
     # Convert Publication Date
     if "Publication Date" in df.columns:
 
-        def safe_isoformat(val):
+        def safe_isoformat(val: datetime) -> None | Any | str:
             if pd.isnull(val):
                 return None
             # Attempt to convert to datetime first, then format
@@ -62,7 +64,7 @@ def load_records(path: Path) -> list[Record]:
     # Convert strings (Source Title, Authors) and replace NaNs with None for the Record object
     # The existing to_str function logic is effectively what is needed,
     # but we can apply it to the Series for speed.
-    def to_str_or_none(val):
+    def to_str_or_none(val: str) -> str | None:
         return str(val) if pd.notna(val) else None
 
     for col in ["Authors", "Source Title"]:
@@ -70,7 +72,7 @@ def load_records(path: Path) -> list[Record]:
             # Applying a function to a Series is faster than df.iterrows()
             df[col] = df[col].apply(to_str_or_none)
 
-    df["import_datetime"] = datetime.now(timezone.utc).isoformat()
+    df["import_datetime"] = datetime.now(UTC).isoformat()
 
     # --- Update the final Record creation ---
 
@@ -93,6 +95,28 @@ def load_records(path: Path) -> list[Record]:
         )
         for _, row in df.iterrows()
     ]
+    
+    # Detect pre-print sources at import time
+    preprint_count = 0
+    for rec in records:
+        preprint_source = detect_preprint_source(rec)
+        if preprint_source:
+            rec.is_preprint = True
+            rec.preprint_source = preprint_source
+            preprint_count += 1
+            log.debug(
+                "preprint_detected_at_import",
+                doi=rec.doi_norm,
+                source_title=rec.source_title,
+                preprint_source=preprint_source
+            )
+        if preprint_source == 'arxiv' and rec.doi_norm and rec.doi_norm.startswith("arxiv:"):
+                rec.doi_norm = rec.doi_norm.replace("arxiv:", "10.48550/arXiv.")
 
-    log.info("research_articles_loaded", count=len(records), path=str(path))
+    log.info(
+        "research_articles_loaded", 
+        count=len(records), 
+        preprint_count=preprint_count,
+        path=str(path)
+    )
     return records

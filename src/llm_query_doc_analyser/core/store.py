@@ -32,10 +32,29 @@ CREATE TABLE IF NOT EXISTS research_articles (
     oa_status TEXT,
     license TEXT,
     oa_pdf_url TEXT,
-    match_reasons TEXT,
     provenance TEXT,
     import_datetime TEXT,
-    enrichment_datetime TEXT
+    enrichment_datetime TEXT,
+    is_preprint INTEGER,
+    preprint_source TEXT,
+    published_doi TEXT,
+    published_journal TEXT,
+    published_url TEXT,
+    published_fulltext_url TEXT
+);
+"""
+
+CREATE_ARTICLE_VERSIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS article_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    preprint_id INTEGER NOT NULL,
+    published_id INTEGER NOT NULL,
+    discovered_at TEXT NOT NULL,
+    discovery_source TEXT NOT NULL,
+    discovery_metadata TEXT,
+    FOREIGN KEY (preprint_id) REFERENCES research_articles(id) ON DELETE CASCADE,
+    FOREIGN KEY (published_id) REFERENCES research_articles(id) ON DELETE CASCADE,
+    UNIQUE(preprint_id, published_id)
 );
 """
 
@@ -98,6 +117,9 @@ CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pdf_resolutions_record_id ON pdf_resolutions(record_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_record_id ON pdf_downloads(record_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_status ON pdf_downloads(status);",
+    "CREATE INDEX IF NOT EXISTS idx_research_articles_is_preprint ON research_articles(is_preprint);",
+    "CREATE INDEX IF NOT EXISTS idx_article_versions_preprint_id ON article_versions(preprint_id);",
+    "CREATE INDEX IF NOT EXISTS idx_article_versions_published_id ON article_versions(published_id);",
 ]
 
 
@@ -122,6 +144,7 @@ def init_db() -> None:
     log.info("initializing_database", path=str(DB_PATH))
     with get_conn() as conn:
         conn.execute(CREATE_RESEARCH_ARTICLES_TABLE_SQL)
+        conn.execute(CREATE_ARTICLE_VERSIONS_TABLE_SQL)
         conn.execute(CREATE_FILTERING_QUERIES_TABLE_SQL)
         conn.execute(CREATE_RECORDS_FILTERINGS_TABLE_SQL)
         conn.execute(CREATE_PDF_RESOLUTIONS_TABLE_SQL)
@@ -154,10 +177,15 @@ def insert_record(rec: Record) -> int:
                 oa_status,
                 license,
                 oa_pdf_url,
-                match_reasons,
                 provenance,
-                import_datetime
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                import_datetime,
+                is_preprint,
+                preprint_source,
+                published_doi,
+                published_journal,
+                published_url,
+                published_fulltext_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.title,
@@ -176,9 +204,14 @@ def insert_record(rec: Record) -> int:
                 rec.oa_status,
                 rec.license,
                 rec.oa_pdf_url,
-                json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
                 rec.import_datetime,
+                int(rec.is_preprint) if rec.is_preprint is not None else None,
+                rec.preprint_source,
+                rec.published_doi,
+                rec.published_journal,
+                rec.published_url,
+                rec.published_fulltext_url,
             ),
         )
         conn.commit()
@@ -195,7 +228,6 @@ def get_records() -> list[Record]:
         records = []
         for row in rows:
             data = dict(zip(cols, row, strict=False))
-            data["match_reasons"] = json.loads(data["match_reasons"] or "[]")
             data["provenance"] = json.loads(data["provenance"] or "{}")
             # MIGRATION: ensure all provenance values are dicts (not strings)
             if isinstance(data["provenance"], dict):
@@ -227,9 +259,14 @@ def update_enrichment_record(rec: Record) -> int | None:
                 oa_status=?,
                 license=?,
                 oa_pdf_url=?,
-                match_reasons=?,
                 provenance=?,
-                enrichment_datetime=?
+                enrichment_datetime=?,
+                is_preprint=?,
+                preprint_source=?,
+                published_doi=?,
+                published_journal=?,
+                published_url=?,
+                published_fulltext_url=?
             WHERE doi_norm=?
             """,
             (
@@ -241,9 +278,14 @@ def update_enrichment_record(rec: Record) -> int | None:
                 rec.oa_status,
                 rec.license,
                 rec.oa_pdf_url,
-                json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
                 rec.enrichment_datetime,
+                int(rec.is_preprint) if rec.is_preprint is not None else None,
+                rec.preprint_source,
+                rec.published_doi,
+                rec.published_journal,
+                rec.published_url,
+                rec.published_fulltext_url,
                 rec.doi_norm,
             ),
         )
@@ -276,8 +318,13 @@ def upsert_record(rec: Record) -> int | None:
                 oa_status=?,
                 license=?,
                 oa_pdf_url=?,
-                match_reasons=?,
-                provenance=?
+                provenance=?,
+                is_preprint=?,
+                preprint_source=?,
+                published_doi=?,
+                published_journal=?,
+                published_url=?,
+                published_fulltext_url=?
             WHERE doi_norm=?
             """,
             (
@@ -296,8 +343,13 @@ def upsert_record(rec: Record) -> int | None:
                 rec.oa_status,
                 rec.license,
                 rec.oa_pdf_url,
-                json.dumps(rec.match_reasons),
                 json.dumps(rec.provenance),
+                int(rec.is_preprint) if rec.is_preprint is not None else None,
+                rec.preprint_source,
+                rec.published_doi,
+                rec.published_journal,
+                rec.published_url,
+                rec.published_fulltext_url,
                 rec.doi_norm,
             ),
         )
@@ -323,9 +375,14 @@ def upsert_record(rec: Record) -> int | None:
                     oa_status, 
                     license, 
                     oa_pdf_url, 
-                    match_reasons, 
-                    provenance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    provenance,
+                    is_preprint,
+                    preprint_source,
+                    published_doi,
+                    published_journal,
+                    published_url,
+                    published_fulltext_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.title,
@@ -344,8 +401,13 @@ def upsert_record(rec: Record) -> int | None:
                     rec.oa_status,
                     rec.license,
                     rec.oa_pdf_url,
-                    json.dumps(rec.match_reasons),
                     json.dumps(rec.provenance),
+                    int(rec.is_preprint) if rec.is_preprint is not None else None,
+                    rec.preprint_source,
+                    rec.published_doi,
+                    rec.published_journal,
+                    rec.published_url,
+                    rec.published_fulltext_url,
                 ),
             )
             conn.commit()
@@ -600,8 +662,6 @@ def get_matched_records_by_filtering_query(filtering_query_id: int) -> list[Reco
         for row in rows:
             data = dict(zip(cols, row, strict=False))
             # Parse JSON fields
-            if data.get("match_reasons"):
-                data["match_reasons"] = json.loads(data["match_reasons"])
             if data.get("provenance"):
                 data["provenance"] = json.loads(data["provenance"])
             records.append(Record(**data))
@@ -894,6 +954,226 @@ def record_pdf_download_attempt(
             )
         
         return download_id
+
+
+def create_article_version_relation(
+    preprint_id: int,
+    published_id: int,
+    discovery_source: str,
+    discovery_metadata: dict[str, Any] | None = None
+) -> int | None:
+    """Create a relation between a preprint and its published version.
+    
+    Args:
+        preprint_id: ID of the preprint record
+        published_id: ID of the published version record  
+        discovery_source: API source that provided the version info (e.g., 'crossref')
+        discovery_metadata: Optional metadata about the discovery
+        
+    Returns:
+        ID of the created relation, or None if already exists or error
+    """
+    from datetime import UTC, datetime
+    
+    log.debug(
+        "creating_article_version_relation",
+        preprint_id=preprint_id,
+        published_id=published_id,
+        discovery_source=discovery_source
+    )
+    
+    with get_conn() as conn:
+        cur = conn.cursor()
+        
+        # Check if relation already exists
+        cur.execute(
+            "SELECT id FROM article_versions WHERE preprint_id = ? AND published_id = ?",
+            (preprint_id, published_id)
+        )
+        existing = cur.fetchone()
+        if existing:
+            log.debug("article_version_relation_exists", relation_id=existing[0])
+            return existing[0]
+        
+        # Insert new relation
+        try:
+            cur.execute(
+                """
+                INSERT INTO article_versions (
+                    preprint_id,
+                    published_id,
+                    discovered_at,
+                    discovery_source,
+                    discovery_metadata
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    preprint_id,
+                    published_id,
+                    datetime.now(UTC).isoformat(),
+                    discovery_source,
+                    json.dumps(discovery_metadata or {})
+                )
+            )
+            conn.commit()
+            relation_id = cur.lastrowid
+            log.info(
+                "article_version_relation_created",
+                relation_id=relation_id,
+                preprint_id=preprint_id,
+                published_id=published_id,
+                discovery_source=discovery_source
+            )
+            return relation_id
+        except Exception as e:
+            log.error(
+                "failed_to_create_article_version_relation",
+                preprint_id=preprint_id,
+                published_id=published_id,
+                error=str(e)
+            )
+            return None
+
+
+def get_published_version_id(preprint_id: int) -> int | None:
+    """Get the published version ID for a given preprint ID.
+    
+    Args:
+        preprint_id: ID of the preprint record
+        
+    Returns:
+        ID of the published version, or None if not found
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT published_id FROM article_versions WHERE preprint_id = ?",
+            (preprint_id,)
+        )
+        result = cur.fetchone()
+        return result[0] if result else None
+
+
+def get_preprint_version_id(published_id: int) -> int | None:
+    """Get the preprint version ID for a given published article ID.
+    
+    Args:
+        published_id: ID of the published article record
+        
+    Returns:
+        ID of the preprint version, or None if not found
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT preprint_id FROM article_versions WHERE published_id = ?",
+            (published_id,)
+        )
+        result = cur.fetchone()
+        return result[0] if result else None
+
+
+def get_article_version_relations() -> list[dict[str, Any]]:
+    """Get all article version relations.
+    
+    Returns:
+        List of relation dictionaries with all fields
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 
+                av.id,
+                av.preprint_id,
+                av.published_id,
+                av.discovered_at,
+                av.discovery_source,
+                av.discovery_metadata,
+                r1.doi_norm as preprint_doi,
+                r1.title as preprint_title,
+                r2.doi_norm as published_doi,
+                r2.title as published_title
+            FROM article_versions av
+            JOIN research_articles r1 ON av.preprint_id = r1.id
+            JOIN research_articles r2 ON av.published_id = r2.id
+            """
+        )
+        rows = cur.fetchall()
+        cols = [desc[0] for desc in cur.description]
+        
+        relations = []
+        for row in rows:
+            data = dict(zip(cols, row, strict=False))
+            data['discovery_metadata'] = json.loads(data.get('discovery_metadata') or '{}')
+            relations.append(data)
+        
+        return relations
+
+
+def get_version_linking_stats() -> dict[str, Any]:
+    """Get statistics on pre-print ↔ published version linking.
+    
+    Returns:
+        Dictionary with linking statistics
+    """
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        
+        # Count total preprints
+        cursor.execute("SELECT COUNT(*) FROM research_articles WHERE is_preprint = 1")
+        total_preprints = cursor.fetchone()[0]
+        
+        # Count preprints with published versions (via relation table)
+        cursor.execute(
+            """
+            SELECT COUNT(DISTINCT preprint_id) 
+            FROM article_versions
+            """
+        )
+        preprints_with_published = cursor.fetchone()[0]
+        
+        # Count published articles with preprint versions (via relation table)
+        cursor.execute(
+            """
+            SELECT COUNT(DISTINCT published_id) 
+            FROM article_versions
+            """
+        )
+        published_with_preprint = cursor.fetchone()[0]
+        
+        # Count by preprint source
+        cursor.execute(
+            """
+            SELECT preprint_source, COUNT(*) 
+            FROM research_articles 
+            WHERE is_preprint = 1 
+            GROUP BY preprint_source
+            """
+        )
+        by_source = dict(cursor.fetchall())
+        
+        # Count by version discovery source
+        cursor.execute(
+            """
+            SELECT discovery_source, COUNT(*) 
+            FROM article_versions 
+            GROUP BY discovery_source
+            """
+        )
+        by_discovery_source = dict(cursor.fetchall())
+
+    return {
+        "total_preprints": total_preprints,
+        "preprints_with_published_version": preprints_with_published,
+        "published_with_preprint_version": published_with_preprint,
+        "linking_rate": (
+            preprints_with_published / total_preprints * 100 
+            if total_preprints > 0 else 0
+        ),
+        "by_preprint_source": by_source,
+        "by_version_discovery_source": by_discovery_source,
+    }
 
 
 def get_pdf_download_stats(filtering_query_id: int | None = None) -> dict:

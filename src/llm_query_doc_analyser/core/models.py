@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -31,8 +33,18 @@ class Record(BaseModel):
     oa_status: str | None = None
     license: str | None = None
     oa_pdf_url: str | None = None
+    
+    # Pre-print Tracking (no bidirectional fields - use relation table)
+    is_preprint: bool | None = None
+    preprint_source: str | None = None  # 'arXiv'|'medRxiv'|'bioRxiv'|'Preprints'
+    
+    # Published version metadata (if preprint has been published)
+    published_doi: str | None = None
+    published_journal: str | None = None
+    published_url: str | None = None
+    published_fulltext_url: str | None = None
 
-    # Scoring
-    match_reasons: list[str] = Field(default_factory=list)
-
-    provenance: dict[str, dict] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    
+    # Enrichment report (for detailed tracking of enrichment process)
+    enrichment_report: dict[str, Any] = Field(default_factory=dict)

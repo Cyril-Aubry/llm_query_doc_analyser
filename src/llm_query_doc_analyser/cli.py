@@ -29,7 +29,7 @@ from .core.store import (
     update_enrichment_record,
     update_filtering_query_stats,
 )
-from .enrich.orchestrator import enrich_record
+from .enrich.orchestrator import enrich_record, format_enrichment_report
 from .filter_rank.prompts import filter_records_with_llm
 from .io_.load import load_records
 from .pdfs.download import download_pdf
@@ -131,12 +131,25 @@ def import_(path: Path) -> None:
 def enrich(
     sources: str = typer.Option("unpaywall,crossref,openalex", help="Comma-separated sources"),
     max_workers: int = 8,
+    auto_enrich_published: bool = typer.Option(
+        True,
+        help="Automatically enrich newly discovered published versions in a second pass"
+    ),
 ) -> None:
-    """Enrich research articles with abstracts and OA info."""
-    log.info("enrich_started", sources=sources, max_workers=max_workers)
-    records = get_records()
-    # Filter records with a enrichment_datetime value not NULL
-    records = [rec for rec in records if rec.enrichment_datetime is None]
+    """Enrich research articles with abstracts and OA info.
+    
+    If preprints with published versions are discovered, automatically runs a second
+    enrichment pass to enrich the newly created published version records.
+    """
+    log.info("enrich_started", sources=sources, max_workers=max_workers, auto_enrich_published=auto_enrich_published)
+    
+    # Helper function to get unenriched records
+    def get_unenriched_records() -> list[Record]:
+        all_records = get_records()
+        return [rec for rec in all_records if rec.enrichment_datetime is None]
+    
+    # Get initial unenriched records
+    records = get_unenriched_records()
     if not records:
         log.warning("no_records_to_enrich")
         typer.echo("No research articles found to enrich.")
@@ -144,18 +157,111 @@ def enrich(
 
     clients: dict[str, Any] = {}  # In production, pass API clients as needed
 
-    async def enrich_all(enrichment_datetime: str) -> None:
-        tasks = [enrich_record(rec, clients) for rec in records]
+    async def enrich_batch(
+        batch_records: list[Record],
+        enrichment_datetime: str,
+        pass_number: int = 1
+    ) -> tuple[list[Record], int]:
+        """Enrich a batch of records and return enriched records with count of new published versions."""
+        typer.echo(f"\n{'='*80}")
+        typer.echo(f"ENRICHMENT PASS {pass_number}")
+        typer.echo(f"{'='*80}")
+        typer.echo(f"\nEnriching {len(batch_records)} records...\n")
+        
+        tasks = [enrich_record(rec, clients) for rec in batch_records]
         enriched = await asyncio.gather(*tasks)
+        
+        # Track newly discovered published versions
+        new_published_count = 0
+        
+        # Display enrichment reports for all records
+        typer.echo("\n" + "="*80)
+        typer.echo(f"ENRICHMENT RESULTS - PASS {pass_number}")
+        typer.echo("="*80 + "\n")
+        
         for rec in enriched:
             rec.enrichment_datetime = enrichment_datetime
-            typer.echo(f"rec enrichment_datetime set to {rec.enrichment_datetime} for {rec.title}")
             update_enrichment_record(rec)
+            
+            # Check if this record has a newly discovered published version
+            if rec.enrichment_report.get("preprint_detection", {}).get("published_version"):
+                pub_version = rec.enrichment_report["preprint_detection"]["published_version"]
+                if pub_version.get("link_created"):
+                    new_published_count += 1
+                    typer.echo(f"📄 Discovered published version: {pub_version.get('doi')} (Record ID: {pub_version.get('published_version_record_id')})")
+            
+            # Display the enrichment report
+            report = format_enrichment_report(rec)
+            typer.echo(report)
+        
+        return enriched, new_published_count
 
+    # Run first enrichment pass
     enrichment_datetime = datetime.now(UTC).isoformat()
-    asyncio.run(enrich_all(enrichment_datetime))
-    log.info("enrich_completed", record_count=len(records))
-    typer.echo(f"Enriched {len(records)} research articles.")
+    enriched_records, new_published_count = asyncio.run(
+        enrich_batch(records, enrichment_datetime, pass_number=1)
+    )
+    
+    log.info(
+        "enrich_pass_completed",
+        pass_number=1,
+        record_count=len(enriched_records),
+        new_published_versions=new_published_count
+    )
+    
+    # Check if we should run a second pass for newly discovered published versions
+    if auto_enrich_published and new_published_count > 0:
+        typer.echo("\n" + "="*80)
+        typer.echo(f"🔄 {new_published_count} published version(s) discovered!")
+        typer.echo("Starting automatic second enrichment pass...")
+        typer.echo("="*80)
+        
+        log.info(
+            "starting_second_enrichment_pass",
+            new_published_count=new_published_count
+        )
+        
+        # Get newly created unenriched records (published versions)
+        second_pass_records = get_unenriched_records()
+        
+        if second_pass_records:
+            # Run second enrichment pass with a new timestamp
+            second_enrichment_datetime = datetime.now(UTC).isoformat()
+            second_enriched, second_pass_new_published = asyncio.run(
+                enrich_batch(second_pass_records, second_enrichment_datetime, pass_number=2)
+            )
+            
+            log.info(
+                "enrich_pass_completed",
+                pass_number=2,
+                record_count=len(second_enriched),
+                new_published_versions=second_pass_new_published
+            )
+            
+            # Final summary
+            typer.echo("\n" + "="*80)
+            typer.echo("✓ ENRICHMENT COMPLETE - 2 PASSES")
+            typer.echo("="*80)
+            typer.echo(f"  Pass 1: {len(enriched_records)} records enriched")
+            typer.echo(f"          {new_published_count} published version(s) discovered")
+            typer.echo(f"  Pass 2: {len(second_enriched)} published version(s) enriched")
+            if second_pass_new_published > 0:
+                typer.echo(f"          ⚠️  {second_pass_new_published} additional published version(s) discovered")
+                typer.echo("          Run 'enrich' again to process them.")
+            typer.echo("="*80)
+        else:
+            log.warning("no_records_for_second_pass")
+            typer.echo("\n⚠️  No unenriched records found for second pass (this shouldn't happen)")
+    else:
+        # Single pass summary
+        typer.echo("\n" + "="*80)
+        typer.echo("✓ ENRICHMENT COMPLETE")
+        typer.echo("="*80)
+        typer.echo(f"  Successfully enriched {len(enriched_records)} research articles.")
+        if new_published_count > 0 and not auto_enrich_published:
+            typer.echo(f"  {new_published_count} published version(s) discovered but not auto-enriched.")
+            typer.echo("  Run 'enrich' again or use --auto-enrich-published to process them.")
+        typer.echo("="*80)
 
 
 def export_records(records: list[Record], export_path: Path, format: str = "parquet") -> None:
@@ -178,6 +284,37 @@ def provenance(record_id: int) -> None:
     prov = get_record_provenance(record_id)
     out = formatted_provenance(prov)
     typer.echo(out)
+
+
+@app.command()
+def version_stats() -> None:
+    """Show pre-print to published version linking statistics."""
+    from .core.store import get_version_linking_stats
+    
+    log.info("version_stats_command_started")
+    init_db()
+    
+    stats = get_version_linking_stats()
+    
+    typer.echo("\n=== Pre-Print to Published Version Linking Statistics ===\n")
+    typer.echo(f"Total pre-prints: {stats['total_preprints']}")
+    typer.echo(f"Pre-prints with published version: {stats['preprints_with_published_version']}")
+    typer.echo(f"Published articles with pre-print version: {stats['published_with_preprint_version']}")
+    typer.echo(f"Linking rate: {stats['linking_rate']:.2f}%\n")
+    
+    if stats['by_preprint_source']:
+        typer.echo("Pre-prints by source:")
+        for source, count in stats['by_preprint_source'].items():
+            typer.echo(f"  - {source}: {count}")
+        typer.echo()
+    
+    if stats['by_version_discovery_source']:
+        typer.echo("Version links discovered by:")
+        for source, count in stats['by_version_discovery_source'].items():
+            typer.echo(f"  - {source}: {count}")
+        typer.echo()
+    
+    log.info("version_stats_command_completed", stats=stats)
 
 
 @app.command()

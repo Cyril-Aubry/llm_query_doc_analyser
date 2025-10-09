@@ -22,7 +22,6 @@ def export_records(records: list[Record], path: Path, format: str = "csv") -> No
         "authors",
         "source_title",
         "abstract_source",
-        "match_reasons",
         "license",
         "is_oa",
     ]

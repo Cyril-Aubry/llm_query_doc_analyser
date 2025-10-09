@@ -1,8 +1,9 @@
 """Utilities for formatting provenance information."""
+
 import json
 
 
-def format_provenance(prov: dict) -> str:
+def formatted_provenance(prov: dict) -> str:
     """Return a human-readable string representing provenance dict.
 
     This formats nested dictionaries and lists, showing the source keys and brief snippets.
@@ -22,14 +23,9 @@ def format_provenance(prov: dict) -> str:
             # Show up to first 5 items
             for i, item in enumerate(val):
                 lines.append(f"  [{i}] {json.dumps(item)}")
-            if len(val) > 5:
-                lines.append(f"  ... and {len(val)-5} more items")
+            # if len(val) > 5:
+            #     lines.append(f"  ... and {len(val) - 5} more items")
         else:
             lines.append(f"  raw: {val!s}")
         lines.append("")
     return "\n".join(lines)
-
-
-def formatted_provenance(prov: dict) -> str:
-    """Return formatted provenance string for display in callers (CLI, logs)."""
-    return format_provenance(prov)

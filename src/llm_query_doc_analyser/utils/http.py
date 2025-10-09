@@ -59,7 +59,7 @@ async def get_with_retry(
     """
     should_close = False
     if client is None:
-        client = httpx.AsyncClient(http2=True, timeout=timeout)
+        client = httpx.AsyncClient(http2=True, timeout=timeout, follow_redirects=True)
         should_close = True
     
     try:

@@ -7,13 +7,19 @@
 - ✅ Added `follow_redirects=True` to `get_with_retry()` client creation
 - ✅ Handles 301/302 redirects from arXiv, medRxiv, and other sources
 
-### 2. Updated `pdfs/download.py`
+### 2. Updated `pdfs/download.py` - Bot Detection Prevention
 **Improvements:**
 - ✅ Uses `get_with_retry()` from `utils/http.py` for automatic retry logic
+- ✅ **Enhanced browser-like headers** to avoid bot detection:
+  - Complete Chrome 131 User-Agent
+  - Accept-Language, Accept-Encoding
+  - Sec-Fetch-* headers (Dest, Mode, Site, User)
+  - sec-ch-ua headers for Chrome browser fingerprint
+  - DNT, Upgrade-Insecure-Requests
+- ✅ **arXiv-specific headers**: Sets `Referer: https://arxiv.org/`
+- ✅ Maintains bioRxiv/medRxiv headers (Google referer, Cache-Control)
+- ✅ Maintains preprints.org headers (manuscript page referrer)
 - ✅ Structured logging with `structlog` throughout
-- ✅ Source-aware header configuration via `_get_pdf_headers()`
-- ✅ Maintains bioRxiv/medRxiv specific headers (Referer, Cache-Control)
-- ✅ Maintains preprints.org specific headers (manuscript page referrer)
 - ✅ Proper error handling with detailed logging
 
 **Header Strategy:**
@@ -31,20 +37,27 @@ def _get_pdf_headers(url: str, source: str | None = None) -> dict[str, str]:
         base_headers["Referer"] = url.split("/download")[0]
 ```
 
-### 3. Updated `cli.py` (pdfs command)
+### 3. Updated `cli.py` (pdfs command) - Source-Aware Rate Limiting
 **Improvements:**
-- ✅ Added `RateLimiter` (2 calls/sec) to be polite to servers
+- ✅ **Source-specific rate limiters** to respect provider guidelines:
+  - **arXiv**: 0.33 calls/sec (1 call per 3 seconds) - arXiv recommendation
+  - **Default**: 1.0 calls/sec (conservative for other sources)
 - ✅ Rate limiting applied before each PDF download attempt
 - ✅ Works with concurrent downloads via semaphore + rate limiter
 
 **Pattern:**
 ```python
-pdf_rate_limiter = RateLimiter(calls_per_second=2.0)
+rate_limiters = {
+    "arxiv": RateLimiter(calls_per_second=0.33),  # arXiv: 1 call per 3 seconds
+    "default": RateLimiter(calls_per_second=1.0),
+}
 
 async def download_record_pdf(rec: Record):
     for cand in candidates:
-        await pdf_rate_limiter.acquire()  # Rate limit
-        result = await download_pdf(cand, dest)  # Retry logic inside
+        source = cand.get("source", "").lower()
+        limiter = rate_limiters.get(source, rate_limiters["default"])
+        await limiter.acquire()  # Source-specific rate limit
+        result = await download_pdf(cand, dest)
 ```
 
 ## Benefits
@@ -60,6 +73,29 @@ async def download_record_pdf(rec: Record):
 ✅ All 30 tests pass  
 ✅ PDF download functionality verified  
 ✅ No breaking changes
+
+## Bot Detection Prevention (arXiv)
+
+**Issue**: arXiv returns HTML "human verification" pages instead of PDFs when bot detection is triggered. Error: `Content type is text/html, not PDF`
+
+**Root Causes**:
+1. Too rapid requests (need 3 second intervals per arXiv guidelines)
+2. Inadequate browser headers (obvious bot signature)
+
+**Solutions**:
+1. **Enhanced Browser Headers** - Complete Chrome fingerprint:
+   ```python
+   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+   "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+   "Accept-Language": "en-US,en;q=0.9",
+   "Sec-Fetch-Dest": "document",
+   "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+   "Referer": "https://arxiv.org/"  # arXiv-specific
+   ```
+
+2. **Source-Specific Rate Limiting**:
+   - arXiv: 0.33 calls/sec (1 per 3 seconds) - follows arXiv guidelines
+   - Others: 1.0 calls/sec (conservative default)
 
 ## Redirect Handling (arXiv, medRxiv)
 

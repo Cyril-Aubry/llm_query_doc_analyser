@@ -1,3 +1,6 @@
+import asyncio
+import random
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,17 +17,36 @@ MAX_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
 
 def _get_pdf_headers(url: str, source: str | None = None) -> dict[str, str]:
     """Get appropriate headers for PDF download based on source."""
+    # More complete browser-like headers to avoid bot detection
     base_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/pdf,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
     
+    # arXiv specific headers
+    if source == "arxiv" or "arxiv.org" in url.lower():
+        base_headers["Referer"] = "https://arxiv.org/"
+        # Add stronger cache-busting for arXiv to bypass Varnish cache
+        base_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    
     # bioRxiv/medRxiv specific headers
-    if source in ("biorxiv", "medrxiv") or any(x in url.lower() for x in ("biorxiv.org", "medrxiv.org")):
-        base_headers.update({
-            "Referer": "https://www.google.com/",
-            "Cache-Control": "no-cache",
-        })
+    elif source in ("biorxiv", "medrxiv") or any(x in url.lower() for x in ("biorxiv.org", "medrxiv.org")):
+        base_headers["Referer"] = "https://www.google.com/"
+        base_headers["Cache-Control"] = "no-cache"
     
     # preprints.org specific headers
     elif source == "preprints" or "preprints.org" in url.lower():
@@ -55,6 +77,15 @@ async def download_pdf(candidate: dict[str, Any], dest_dir: Path) -> dict[str, A
     if not url:
         log.warning("pdf_download_no_url", candidate=candidate)
         return {"status": "error", "error": "No URL provided"}
+
+    # Add cache-busting for arXiv to bypass Varnish caching of bot-detected responses
+    if source == "arxiv" or "arxiv.org" in url.lower():
+        # Add timestamp as query param to bust cache
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}_cb={int(time.time() * 1000)}"
+        # Add small random delay (0-2 seconds) to further avoid pattern detection
+        await asyncio.sleep(random.uniform(0, 2))
+        log.debug("arxiv_cache_busting_applied", original_url=candidate.get("url"), modified_url=url)
 
     headers = _get_pdf_headers(url, source)
     

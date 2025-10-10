@@ -35,6 +35,7 @@ from .io_.load import load_records
 from .pdfs.download import download_pdf
 from .pdfs.resolve import resolve_pdf_candidates
 from .utils.files import rename_pdf_file
+from .utils.http import RateLimiter
 from .utils.log import get_logger, setup_logging
 from .utils.provenance import formatted_provenance
 
@@ -598,9 +599,12 @@ def pdfs(
     error_count = 0
     no_candidates_for_download = 0
 
-    # Rate limiter for PDF downloads (be polite to servers)
-    from .utils.http import RateLimiter
-    pdf_rate_limiter = RateLimiter(calls_per_second=2.0)
+    # Rate limiters for PDF downloads (source-specific politeness)
+    # arXiv requires very slow rate to avoid being cached as bot-detected
+    rate_limiters = {
+        "arxiv": RateLimiter(calls_per_second=0.1),  # arXiv: 1 call per 10 seconds (strict)
+        "default": RateLimiter(calls_per_second=1.0),  # Conservative default
+    }
     
     # Process each record for download
     async def download_record_pdf(rec: Record) -> None:
@@ -626,8 +630,10 @@ def pdfs(
         download_success = False
         for cand in candidates:
             try:
-                # Apply rate limiting
-                await pdf_rate_limiter.acquire()
+                # Apply source-specific rate limiting
+                source = cand.get("source", "").lower()
+                limiter = rate_limiters.get(source, rate_limiters["default"])
+                await limiter.acquire()
                 
                 result = await download_pdf(cand, dest)
                 status = result.get("status")

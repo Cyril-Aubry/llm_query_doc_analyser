@@ -17,12 +17,15 @@ from .core.store import (
     create_filtering_query,
     filter_already_downloaded_records,
     filter_unresolved_records,
+    get_conn,
     get_matched_records_by_filtering_query,
     get_pdf_download_stats,
     get_record_provenance,
     get_records,
     get_resolved_candidates,
     init_db,
+    insert_docx_version,
+    insert_markdown_version,
     insert_pdf_resolution,
     insert_record,
     record_pdf_download_attempt,
@@ -32,7 +35,7 @@ from .core.store import (
 from .enrich.orchestrator import enrich_record, format_enrichment_report
 from .filter_rank.prompts import filter_records_with_llm
 from .io_.load import load_records
-from .pdfs.download import download_pdf
+from .pdfs.download import convert_docx_to_markdown_versions, download_pdf, get_docx_for_pdf
 from .pdfs.resolve import resolve_pdf_candidates
 from .utils.files import rename_pdf_file
 from .utils.http import RateLimiter
@@ -91,8 +94,16 @@ def _get_logger() -> structlog.BoundLogger | Any:
     return _log_state["logger"]
 
 
+class _LogProxy:
+    """Proxy class that forwards all attribute access to the lazily-initialized logger."""
+    
+    def __getattr__(self, name: str) -> Any:
+        """Forward attribute access to the actual logger."""
+        return getattr(_get_logger(), name)
+
+
 # Module-level logger accessor
-log = type("LogProxy", (), {"__getattr__": lambda self, name: getattr(_get_logger(), name)})()
+log = _LogProxy()
 session_id = _log_state["session_id"]
 
 
@@ -133,22 +144,26 @@ def enrich(
     sources: str = typer.Option("unpaywall,crossref,openalex", help="Comma-separated sources"),
     max_workers: int = 8,
     auto_enrich_published: bool = typer.Option(
-        True,
-        help="Automatically enrich newly discovered published versions in a second pass"
+        True, help="Automatically enrich newly discovered published versions in a second pass"
     ),
 ) -> None:
     """Enrich research articles with abstracts and OA info.
-    
+
     If preprints with published versions are discovered, automatically runs a second
     enrichment pass to enrich the newly created published version records.
     """
-    log.info("enrich_started", sources=sources, max_workers=max_workers, auto_enrich_published=auto_enrich_published)
-    
+    log.info(
+        "enrich_started",
+        sources=sources,
+        max_workers=max_workers,
+        auto_enrich_published=auto_enrich_published,
+    )
+
     # Helper function to get unenriched records
     def get_unenriched_records() -> list[Record]:
         all_records = get_records()
         return [rec for rec in all_records if rec.enrichment_datetime is None]
-    
+
     # Get initial unenriched records
     records = get_unenriched_records()
     if not records:
@@ -159,42 +174,42 @@ def enrich(
     clients: dict[str, Any] = {}  # In production, pass API clients as needed
 
     async def enrich_batch(
-        batch_records: list[Record],
-        enrichment_datetime: str,
-        pass_number: int = 1
+        batch_records: list[Record], enrichment_datetime: str, pass_number: int = 1
     ) -> tuple[list[Record], int]:
         """Enrich a batch of records and return enriched records with count of new published versions."""
-        typer.echo(f"\n{'='*80}")
+        typer.echo(f"\n{'=' * 80}")
         typer.echo(f"ENRICHMENT PASS {pass_number}")
-        typer.echo(f"{'='*80}")
+        typer.echo(f"{'=' * 80}")
         typer.echo(f"\nEnriching {len(batch_records)} records...\n")
-        
+
         tasks = [enrich_record(rec, clients) for rec in batch_records]
         enriched = await asyncio.gather(*tasks)
-        
+
         # Track newly discovered published versions
         new_published_count = 0
-        
+
         # Display enrichment reports for all records
-        typer.echo("\n" + "="*80)
+        typer.echo("\n" + "=" * 80)
         typer.echo(f"ENRICHMENT RESULTS - PASS {pass_number}")
-        typer.echo("="*80 + "\n")
-        
+        typer.echo("=" * 80 + "\n")
+
         for rec in enriched:
             rec.enrichment_datetime = enrichment_datetime
             update_enrichment_record(rec)
-            
+
             # Check if this record has a newly discovered published version
             if rec.enrichment_report.get("preprint_detection", {}).get("published_version"):
                 pub_version = rec.enrichment_report["preprint_detection"]["published_version"]
                 if pub_version.get("link_created"):
                     new_published_count += 1
-                    typer.echo(f"📄 Discovered published version: {pub_version.get('doi')} (Record ID: {pub_version.get('published_version_record_id')})")
-            
+                    typer.echo(
+                        f"📄 Discovered published version: {pub_version.get('doi')} (Record ID: {pub_version.get('published_version_record_id')})"
+                    )
+
             # Display the enrichment report
             report = format_enrichment_report(rec)
             typer.echo(report)
-        
+
         return enriched, new_published_count
 
     # Run first enrichment pass
@@ -202,67 +217,68 @@ def enrich(
     enriched_records, new_published_count = asyncio.run(
         enrich_batch(records, enrichment_datetime, pass_number=1)
     )
-    
+
     log.info(
         "enrich_pass_completed",
         pass_number=1,
         record_count=len(enriched_records),
-        new_published_versions=new_published_count
+        new_published_versions=new_published_count,
     )
-    
+
     # Check if we should run a second pass for newly discovered published versions
     if auto_enrich_published and new_published_count > 0:
-        typer.echo("\n" + "="*80)
+        typer.echo("\n" + "=" * 80)
         typer.echo(f"🔄 {new_published_count} published version(s) discovered!")
         typer.echo("Starting automatic second enrichment pass...")
-        typer.echo("="*80)
-        
-        log.info(
-            "starting_second_enrichment_pass",
-            new_published_count=new_published_count
-        )
-        
+        typer.echo("=" * 80)
+
+        log.info("starting_second_enrichment_pass", new_published_count=new_published_count)
+
         # Get newly created unenriched records (published versions)
         second_pass_records = get_unenriched_records()
-        
+
         if second_pass_records:
             # Run second enrichment pass with a new timestamp
             second_enrichment_datetime = datetime.now(UTC).isoformat()
             second_enriched, second_pass_new_published = asyncio.run(
                 enrich_batch(second_pass_records, second_enrichment_datetime, pass_number=2)
             )
-            
+
             log.info(
                 "enrich_pass_completed",
                 pass_number=2,
                 record_count=len(second_enriched),
-                new_published_versions=second_pass_new_published
+                new_published_versions=second_pass_new_published,
             )
-            
+
             # Final summary
-            typer.echo("\n" + "="*80)
+            typer.echo("\n" + "=" * 80)
             typer.echo("✓ ENRICHMENT COMPLETE - 2 PASSES")
-            typer.echo("="*80)
+            typer.echo("=" * 80)
             typer.echo(f"  Pass 1: {len(enriched_records)} records enriched")
             typer.echo(f"          {new_published_count} published version(s) discovered")
             typer.echo(f"  Pass 2: {len(second_enriched)} published version(s) enriched")
             if second_pass_new_published > 0:
-                typer.echo(f"          ⚠️  {second_pass_new_published} additional published version(s) discovered")
+                typer.echo(
+                    f"          ⚠️  {second_pass_new_published} additional published version(s) discovered"
+                )
                 typer.echo("          Run 'enrich' again to process them.")
-            typer.echo("="*80)
+            typer.echo("=" * 80)
         else:
             log.warning("no_records_for_second_pass")
             typer.echo("\n⚠️  No unenriched records found for second pass (this shouldn't happen)")
     else:
         # Single pass summary
-        typer.echo("\n" + "="*80)
+        typer.echo("\n" + "=" * 80)
         typer.echo("✓ ENRICHMENT COMPLETE")
-        typer.echo("="*80)
+        typer.echo("=" * 80)
         typer.echo(f"  Successfully enriched {len(enriched_records)} research articles.")
         if new_published_count > 0 and not auto_enrich_published:
-            typer.echo(f"  {new_published_count} published version(s) discovered but not auto-enriched.")
+            typer.echo(
+                f"  {new_published_count} published version(s) discovered but not auto-enriched."
+            )
             typer.echo("  Run 'enrich' again or use --auto-enrich-published to process them.")
-        typer.echo("="*80)
+        typer.echo("=" * 80)
 
 
 def export_records(records: list[Record], export_path: Path, format: str = "parquet") -> None:
@@ -291,30 +307,32 @@ def provenance(record_id: int) -> None:
 def version_stats() -> None:
     """Show pre-print to published version linking statistics."""
     from .core.store import get_version_linking_stats
-    
+
     log.info("version_stats_command_started")
     init_db()
-    
+
     stats = get_version_linking_stats()
-    
+
     typer.echo("\n=== Pre-Print to Published Version Linking Statistics ===\n")
     typer.echo(f"Total pre-prints: {stats['total_preprints']}")
     typer.echo(f"Pre-prints with published version: {stats['preprints_with_published_version']}")
-    typer.echo(f"Published articles with pre-print version: {stats['published_with_preprint_version']}")
+    typer.echo(
+        f"Published articles with pre-print version: {stats['published_with_preprint_version']}"
+    )
     typer.echo(f"Linking rate: {stats['linking_rate']:.2f}%\n")
-    
-    if stats['by_preprint_source']:
+
+    if stats["by_preprint_source"]:
         typer.echo("Pre-prints by source:")
-        for source, count in stats['by_preprint_source'].items():
+        for source, count in stats["by_preprint_source"].items():
             typer.echo(f"  - {source}: {count}")
         typer.echo()
-    
-    if stats['by_version_discovery_source']:
+
+    if stats["by_version_discovery_source"]:
         typer.echo("Version links discovered by:")
-        for source, count in stats['by_version_discovery_source'].items():
+        for source, count in stats["by_version_discovery_source"].items():
             typer.echo(f"  - {source}: {count}")
         typer.echo()
-    
+
     log.info("version_stats_command_completed", stats=stats)
 
 
@@ -576,7 +594,9 @@ def pdfs(
         typer.echo("\n[Phase 1] Skipped - all records already resolved")
 
     # PHASE 2: Download PDFs for records that haven't been successfully downloaded yet
-    typer.echo("\n[Phase 2] Downloading PDFs from resolved candidates, if not already downloaded...")
+    typer.echo(
+        "\n[Phase 2] Downloading PDFs from resolved candidates, if not already downloaded..."
+    )
 
     # Filter records to only those not already downloaded
     records_needing_download = filter_already_downloaded_records(matched_filtering_query_records)
@@ -605,10 +625,15 @@ def pdfs(
         "arxiv": RateLimiter(calls_per_second=0.1),  # arXiv: 1 call per 10 seconds (strict)
         "default": RateLimiter(calls_per_second=1.0),  # Conservative default
     }
-    
+
     # Process each record for download
     async def download_record_pdf(rec: Record) -> None:
-        nonlocal downloaded_count, unavailable_count, too_large_count, error_count, no_candidates_for_download
+        nonlocal \
+            downloaded_count, \
+            unavailable_count, \
+            too_large_count, \
+            error_count, \
+            no_candidates_for_download
 
         # Retrieve resolved candidates from database
         candidates = get_resolved_candidates(rec.id)
@@ -634,7 +659,7 @@ def pdfs(
                 source = cand.get("source", "").lower()
                 limiter = rate_limiters.get(source, rate_limiters["default"])
                 await limiter.acquire()
-                
+
                 result = await download_pdf(cand, dest)
                 status = result.get("status")
 
@@ -666,6 +691,7 @@ def pdfs(
                         pdf_local_path=final_path_str or result.get("path"),
                         sha1=result.get("sha1"),
                         final_url=result.get("final_url"),
+                        file_size_bytes=result.get("file_size_bytes"),
                         error_message=result.get("error"),
                     )
 
@@ -677,6 +703,7 @@ def pdfs(
                         doi=rec.doi_norm,
                         source=cand.get("source"),
                         path=final_path_str or result.get("path"),
+                        file_size_bytes=result.get("file_size_bytes"),
                     )
                     break
 
@@ -690,6 +717,7 @@ def pdfs(
                     pdf_local_path=result.get("path"),
                     sha1=result.get("sha1"),
                     final_url=result.get("final_url"),
+                    file_size_bytes=result.get("file_size_bytes"),
                     error_message=result.get("error"),
                 )
 
@@ -761,6 +789,501 @@ def pdfs(
     typer.echo(f"  Errors: {stats.get('error', 0)}")
     typer.echo(f"\nPDFs saved to: {dest}")
     typer.echo(f"Results stored in database: {DB_PATH}")
+
+
+def _retrieve_docx_for_record(record_id: int, pdf_path: Path | None = None) -> dict[str, Any]:
+    """Helper function to retrieve and record docx version for a record.
+
+    Args:
+        record_id: ID of the record
+        pdf_path: Optional PDF path. If None, will be looked up from database.
+
+    Returns:
+        Dictionary with:
+            - success: bool indicating if docx was found
+            - docx_id: ID of the inserted docx_versions row
+            - docx_path: Path to docx file if found, None otherwise
+            - error: Error message if any
+    """
+    log.debug("retrieve_docx_for_record_started", record_id=record_id, pdf_path=str(pdf_path) if pdf_path else None)
+
+    # Resolve pdf_path from DB if needed
+    if pdf_path is None:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT pdf_local_path FROM pdf_downloads WHERE record_id = ? AND status = 'downloaded' ORDER BY id DESC LIMIT 1",
+                (record_id,),
+            )
+            row = cur.fetchone()
+            if not row or not row[0]:
+                log.warning("no_pdf_found_for_record", record_id=record_id)
+                return {
+                    "success": False,
+                    "docx_id": None,
+                    "docx_path": None,
+                    "error": "No downloaded PDF found for record"
+                }
+            pdf_path = Path(row[0])
+
+    # Check if PDF exists
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        log.warning("pdf_file_not_found", record_id=record_id, pdf_path=str(pdf_path))
+        return {
+            "success": False,
+            "docx_id": None,
+            "docx_path": None,
+            "error": f"PDF not found: {pdf_path}"
+        }
+
+    # Search for docx
+    docx_found = get_docx_for_pdf(pdf_path)
+    now = datetime.now(UTC).isoformat()
+
+    if docx_found:
+        # Calculate file size
+        file_size_bytes = docx_found.stat().st_size
+        
+        docx_id = insert_docx_version(
+            record_id=record_id,
+            docx_local_path=str(docx_found),
+            retrieved_attempt_datetime=now,
+            file_size_bytes=file_size_bytes,
+            error_message=None,
+        )
+        log.info("docx_retrieve_success", record_id=record_id, docx_id=docx_id, path=str(docx_found), file_size_bytes=file_size_bytes)
+        return {
+            "success": True,
+            "docx_id": docx_id,
+            "docx_path": str(docx_found),
+            "error": None
+        }
+    else:
+        docx_id = insert_docx_version(
+            record_id=record_id,
+            docx_local_path=None,
+            retrieved_attempt_datetime=now,
+            file_size_bytes=None,
+            error_message="not_found",
+        )
+        log.info("docx_retrieve_not_found", record_id=record_id, docx_id=docx_id)
+        return {
+            "success": False,
+            "docx_id": docx_id,
+            "docx_path": None,
+            "error": "not_found"
+        }
+
+
+@app.command()
+def docx_retrieve(
+    record_id: int | None = None,
+    pdf_path: Path | None = None,
+) -> None:
+    """Locate and record docx version for a PDF or record.
+
+    This command will:
+    - Determine the PDF path (from --pdf-path or latest successful pdf_download for --record-id)
+    - Search the data/docx folder for a matching .docx
+    - Insert a row into docx_versions table with the result
+    """
+    log.info(
+        "docx_retrieve_started", record_id=record_id, pdf_path=str(pdf_path) if pdf_path else None
+    )
+
+    if record_id is None and pdf_path is None:
+        typer.echo("Provide either --record-id or --pdf-path")
+        raise typer.Exit(code=2)
+
+    # Initialize database
+    init_db()
+
+    # If only pdf_path is provided, we need to find the record_id
+    if pdf_path is not None and record_id is None:
+        pdf_path = Path(pdf_path)
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT record_id FROM pdf_downloads WHERE pdf_local_path = ? ORDER BY id DESC LIMIT 1",
+                (str(pdf_path),),
+            )
+            row = cur.fetchone()
+            if not row:
+                typer.echo(f"No record found for PDF: {pdf_path}")
+                raise typer.Exit(code=1)
+            record_id = row[0]
+
+    # At this point record_id must be set
+    assert record_id is not None, "record_id must be set"
+    result = _retrieve_docx_for_record(record_id, pdf_path)
+
+    if result["success"]:
+        typer.echo(f"Docx version recorded (docx_id={result['docx_id']}, path={result['docx_path']})")
+    else:
+        typer.echo(f"Docx version not found for record {record_id}: {result['error']}")
+        if result["error"] not in ("not_found", "No downloaded PDF found for record"):
+            raise typer.Exit(code=1)
+
+
+@app.command()
+def batch_docx_retrieve() -> None:
+    """Batch retrieve DOCX versions for all records with PDFs but missing DOCX versions.
+
+    This command will:
+    - Query the article_file_versions_view to find records with PDFs but no DOCX
+    - Attempt to locate and record DOCX versions for each record
+    - Display summary statistics
+    """
+    log.info("batch_docx_retrieve_started")
+    init_db()
+
+    typer.echo("\nFetching records with PDFs but missing DOCX versions...")
+
+    # Query the view for records with PDFs but no DOCX
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT record_id, pdf_local_path
+            FROM article_file_versions_view
+            WHERE has_pdf = 1 
+            AND pdf_status = 'downloaded'
+            AND has_docx = 0
+            ORDER BY record_id
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        typer.echo("No records found with PDFs but missing DOCX versions.")
+        log.info("batch_docx_retrieve_no_records")
+        return
+
+    typer.echo(f"Found {len(rows)} records to process.\n")
+
+    # Process each record
+    success_count = 0
+    not_found_count = 0
+    error_count = 0
+
+    for record_id, pdf_path in rows:
+        pdf_path_obj = Path(pdf_path) if pdf_path else None
+        result = _retrieve_docx_for_record(record_id, pdf_path_obj)
+
+        if result["success"]:
+            success_count += 1
+            typer.echo(f"✓ Record {record_id}: DOCX found ({result['docx_path']})")
+        elif result["error"] == "not_found":
+            not_found_count += 1
+            typer.echo(f"✗ Record {record_id}: DOCX not found")
+        else:
+            error_count += 1
+            typer.echo(f"⚠ Record {record_id}: Error - {result['error']}")
+
+    # Display summary
+    typer.echo("\n" + "=" * 80)
+    typer.echo("BATCH DOCX RETRIEVAL SUMMARY")
+    typer.echo("=" * 80)
+    typer.echo(f"Total records processed: {len(rows)}")
+    typer.echo(f"  DOCX found: {success_count}")
+    typer.echo(f"  DOCX not found: {not_found_count}")
+    typer.echo(f"  Errors: {error_count}")
+    typer.echo(f"\nResults stored in database: {DB_PATH}")
+
+    log.info(
+        "batch_docx_retrieve_completed",
+        total_records=len(rows),
+        success_count=success_count,
+        not_found_count=not_found_count,
+        error_count=error_count,
+    )
+
+
+def _convert_docx_to_markdown_for_record(
+    record_id: int, 
+    docx_path: Path, 
+    docx_version_id: int | None = None
+) -> dict[str, Any]:
+    """Helper function to convert DOCX to markdown versions and record them for a record.
+
+    Args:
+        record_id: ID of the record
+        docx_path: Path to the DOCX file
+        docx_version_id: Optional ID of the docx_versions row
+
+    Returns:
+        Dictionary with:
+            - success: bool indicating if at least one conversion succeeded
+            - no_images_success: bool for no_images variant
+            - with_images_success: bool for with_images variant
+            - no_images_path: Path to no_images markdown if successful
+            - with_images_path: Path to with_images markdown if successful
+            - error: Error message if any
+    """
+    log.debug(
+        "convert_docx_to_markdown_for_record_started",
+        record_id=record_id,
+        docx_path=str(docx_path),
+        docx_version_id=docx_version_id
+    )
+
+    # Check if DOCX file exists
+    if not docx_path.exists():
+        log.warning("docx_file_not_found", record_id=record_id, docx_path=str(docx_path))
+        return {
+            "success": False,
+            "no_images_success": False,
+            "with_images_success": False,
+            "no_images_path": None,
+            "with_images_path": None,
+            "error": f"DOCX file not found: {docx_path}"
+        }
+
+    # Convert to markdown versions
+    now = datetime.now(UTC).isoformat()
+    conv = convert_docx_to_markdown_versions(docx_path)
+
+    no_images_success = False
+    with_images_success = False
+    no_images_path = None
+    with_images_path = None
+
+    # Handle no_images variant
+    if conv.get("md_no_images"):
+        md_path_str = conv.get("md_no_images")
+        md_path = Path(md_path_str) if md_path_str else None
+        file_size_bytes = md_path.stat().st_size if md_path and md_path.exists() else None
+        
+        insert_markdown_version(
+            record_id=record_id,
+            docx_version_id=docx_version_id,
+            variant="no_images",
+            md_local_path=md_path_str,
+            created_datetime=now,
+            file_size_bytes=file_size_bytes,
+        )
+        no_images_success = True
+        no_images_path = md_path_str
+        log.info("markdown_no_images_created", record_id=record_id, path=no_images_path, file_size_bytes=file_size_bytes)
+    else:
+        insert_markdown_version(
+            record_id=record_id,
+            docx_version_id=docx_version_id,
+            variant="no_images",
+            md_local_path=None,
+            created_datetime=now,
+            file_size_bytes=None,
+            error_message="conversion_failed",
+        )
+        log.warning("markdown_no_images_failed", record_id=record_id)
+
+    # Handle with_images variant
+    if conv.get("md_with_images"):
+        md_path_str = conv.get("md_with_images")
+        md_path = Path(md_path_str) if md_path_str else None
+        file_size_bytes = md_path.stat().st_size if md_path and md_path.exists() else None
+        
+        insert_markdown_version(
+            record_id=record_id,
+            docx_version_id=docx_version_id,
+            variant="with_images",
+            md_local_path=md_path_str,
+            created_datetime=now,
+            file_size_bytes=file_size_bytes,
+        )
+        with_images_success = True
+        with_images_path = md_path_str
+        log.info("markdown_with_images_created", record_id=record_id, path=with_images_path, file_size_bytes=file_size_bytes)
+    else:
+        insert_markdown_version(
+            record_id=record_id,
+            docx_version_id=docx_version_id,
+            variant="with_images",
+            md_local_path=None,
+            created_datetime=now,
+            file_size_bytes=None,
+            error_message="conversion_failed",
+        )
+        log.warning("markdown_with_images_failed", record_id=record_id)
+
+    return {
+        "success": no_images_success or with_images_success,
+        "no_images_success": no_images_success,
+        "with_images_success": with_images_success,
+        "no_images_path": no_images_path,
+        "with_images_path": with_images_path,
+        "error": None if (no_images_success or with_images_success) else "All conversions failed"
+    }
+
+
+@app.command()
+def docx_to_markdown(
+    docx_version_id: int | None = None,
+    docx_path: Path | None = None,
+    record_id: int | None = None,
+) -> None:
+    """Convert docx to markdown versions and record them.
+
+    This command will:
+    - Take a docx_version_id OR docx_path (and optionally record_id)
+    - Convert to two markdown variants via pandoc (no images and with images)
+    - Insert rows into markdown_versions table
+    """
+    log.info(
+        "docx_to_markdown_started",
+        docx_version_id=docx_version_id,
+        docx_path=str(docx_path) if docx_path else None,
+        record_id=record_id,
+    )
+
+    if docx_version_id is None and docx_path is None:
+        typer.echo("Provide either --docx-version-id or --docx-path")
+        raise typer.Exit(code=2)
+
+    # Initialize database
+    init_db()
+
+    # Resolve docx_path and record_id from docx_version_id if provided
+    if docx_version_id is not None:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT record_id, docx_local_path FROM docx_versions WHERE id = ?",
+                (docx_version_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                typer.echo(f"No docx_version found with id={docx_version_id}")
+                raise typer.Exit(code=1)
+            record_id = row[0]
+            docx_path = Path(row[1]) if row[1] else None
+
+    if docx_path is None:
+        typer.echo("No docx_path available")
+        raise typer.Exit(code=1)
+
+    if record_id is None:
+        typer.echo("No record_id available")
+        raise typer.Exit(code=1)
+
+    # At this point both record_id and docx_path must be set
+    docx_path = Path(docx_path)
+    if not docx_path.exists():
+        typer.echo(f"Docx file not found: {docx_path}")
+        raise typer.Exit(code=1)
+
+    result = _convert_docx_to_markdown_for_record(record_id, docx_path, docx_version_id)
+
+    if result["no_images_success"]:
+        typer.echo(f"✓ Markdown (no images) created: {result['no_images_path']}")
+    else:
+        typer.echo("✗ Markdown (no images) conversion failed")
+
+    if result["with_images_success"]:
+        typer.echo(f"✓ Markdown (with images) created: {result['with_images_path']}")
+    else:
+        typer.echo("✗ Markdown (with images) conversion failed")
+
+    if not result["success"]:
+        raise typer.Exit(code=1)
+
+    log.info(
+        "docx_to_markdown_completed",
+        record_id=record_id,
+        docx_version_id=docx_version_id,
+        no_images_success=result["no_images_success"],
+        with_images_success=result["with_images_success"],
+    )
+
+
+@app.command()
+def batch_docx_to_markdown() -> None:
+    """Batch convert DOCX to markdown versions for all records with DOCX but missing markdown versions.
+
+    This command will:
+    - Query the article_file_versions_view to find records with DOCX but incomplete markdown variants
+    - Attempt to convert each DOCX to both markdown versions (no_images and with_images)
+    - Display summary statistics
+    """
+    log.info("batch_docx_to_markdown_started")
+    init_db()
+
+    typer.echo("\nFetching records with DOCX but missing markdown variants...")
+
+    # Query the view for records with DOCX but missing markdown variants
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT record_id, docx_version_id, docx_local_path
+            FROM article_file_versions_view
+            WHERE has_docx = 1
+            AND docx_local_path IS NOT NULL
+            AND docx_error_message IS NULL
+            AND has_both_markdown_variants = 0
+            ORDER BY record_id
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        typer.echo("No records found with DOCX but missing markdown variants.")
+        log.info("batch_docx_to_markdown_no_records")
+        return
+
+    typer.echo(f"Found {len(rows)} records to process.\n")
+
+    # Process each record
+    full_success_count = 0  # Both variants succeeded
+    partial_success_count = 0  # At least one variant succeeded
+    failed_count = 0  # All conversions failed
+    error_count = 0  # Errors occurred
+
+    for record_id, docx_version_id, docx_local_path in rows:
+        docx_path = Path(docx_local_path) if docx_local_path else None
+        
+        if docx_path is None:
+            error_count += 1
+            typer.echo(f"⚠ Record {record_id}: No DOCX path available")
+            continue
+
+        result = _convert_docx_to_markdown_for_record(record_id, docx_path, docx_version_id)
+
+        if result["success"]:
+            if result["no_images_success"] and result["with_images_success"]:
+                full_success_count += 1
+                typer.echo(f"✓ Record {record_id}: Both markdown variants created")
+            else:
+                partial_success_count += 1
+                variants = []
+                if result["no_images_success"]:
+                    variants.append("no_images")
+                if result["with_images_success"]:
+                    variants.append("with_images")
+                typer.echo(f"◐ Record {record_id}: Partial success ({', '.join(variants)})")
+        elif result["error"] and "not found" in result["error"].lower():
+            error_count += 1
+            typer.echo(f"⚠ Record {record_id}: {result['error']}")
+        else:
+            failed_count += 1
+            typer.echo(f"✗ Record {record_id}: All conversions failed")
+
+    # Display summary
+    typer.echo("\n" + "=" * 80)
+    typer.echo("BATCH DOCX TO MARKDOWN CONVERSION SUMMARY")
+    typer.echo("=" * 80)
+    typer.echo(f"Total records processed: {len(rows)}")
+    typer.echo(f"  Full success (both variants): {full_success_count}")
+    typer.echo(f"  Partial success (one variant): {partial_success_count}")
+    typer.echo(f"  Failed (no variants): {failed_count}")
+    typer.echo(f"  Errors: {error_count}")
+    typer.echo(f"\nResults stored in database: {DB_PATH}")
+
+    log.info(
+        "batch_docx_to_markdown_completed",
+        total_records=len(rows),
+        full_success_count=full_success_count,
+        partial_success_count=partial_success_count,
+        failed_count=failed_count,
+        error_count=error_count,
+    )
 
 
 @app.command()

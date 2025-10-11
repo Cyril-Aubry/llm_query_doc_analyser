@@ -106,8 +106,36 @@ CREATE TABLE IF NOT EXISTS pdf_downloads (
     pdf_local_path TEXT,
     sha1 TEXT,
     final_url TEXT,
+    file_size_bytes INTEGER,
     error_message TEXT,
     FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_DOCX_VERSIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS docx_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id INTEGER NOT NULL,
+    retrieved_attempt_datetime TEXT NOT NULL,
+    docx_local_path TEXT,
+    file_size_bytes INTEGER,
+    error_message TEXT,
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_MARKDOWN_VERSIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS markdown_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id INTEGER NOT NULL,
+    docx_version_id INTEGER,
+    created_datetime TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    md_local_path TEXT,
+    file_size_bytes INTEGER,
+    error_message TEXT,
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
+    FOREIGN KEY (docx_version_id) REFERENCES docx_versions(id) ON DELETE SET NULL
 );
 """
 
@@ -122,6 +150,101 @@ CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_article_versions_preprint_id ON article_versions(preprint_id);",
     "CREATE INDEX IF NOT EXISTS idx_article_versions_published_id ON article_versions(published_id);",
 ]
+
+CREATE_ARTICLE_FILE_VERSIONS_VIEW_SQL = """
+CREATE VIEW IF NOT EXISTS article_file_versions_view AS
+SELECT 
+    ra.id AS record_id,
+    ra.title,
+    ra.doi_norm,
+    ra.pub_date,
+    ra.authors,
+    ra.source_title,
+    -- PDF Download Information
+    CASE WHEN pd.id IS NOT NULL THEN 1 ELSE 0 END AS has_pdf,
+    pd.status AS pdf_status,
+    pd.pdf_local_path,
+    pd.download_attempt_datetime AS pdf_download_datetime,
+    pd.url AS pdf_url,
+    pd.source AS pdf_source,
+    pd.sha1 AS pdf_sha1,
+    -- DOCX Version Information
+    CASE WHEN dv.id IS NOT NULL THEN 1 ELSE 0 END AS has_docx,
+    dv.id AS docx_version_id,
+    dv.docx_local_path,
+    dv.retrieved_attempt_datetime AS docx_retrieved_datetime,
+    dv.error_message AS docx_error_message,
+    -- Markdown Version Information (no_images variant)
+    CASE WHEN mv_no_images.id IS NOT NULL THEN 1 ELSE 0 END AS has_markdown_no_images,
+    mv_no_images.id AS markdown_no_images_id,
+    mv_no_images.md_local_path AS markdown_no_images_path,
+    mv_no_images.created_datetime AS markdown_no_images_created_datetime,
+    mv_no_images.error_message AS markdown_no_images_error_message,
+    -- Markdown Version Information (with_images variant)
+    CASE WHEN mv_with_images.id IS NOT NULL THEN 1 ELSE 0 END AS has_markdown_with_images,
+    mv_with_images.id AS markdown_with_images_id,
+    mv_with_images.md_local_path AS markdown_with_images_path,
+    mv_with_images.created_datetime AS markdown_with_images_created_datetime,
+    mv_with_images.error_message AS markdown_with_images_error_message,
+    -- Combined markdown flags
+    CASE WHEN mv_no_images.id IS NOT NULL OR mv_with_images.id IS NOT NULL THEN 1 ELSE 0 END AS has_markdown,
+    CASE WHEN mv_no_images.id IS NOT NULL AND mv_with_images.id IS NOT NULL THEN 1 ELSE 0 END AS has_both_markdown_variants,
+    -- Summary flags for easy filtering
+    CASE 
+        WHEN pd.id IS NOT NULL AND dv.id IS NOT NULL 
+             AND mv_no_images.id IS NOT NULL AND mv_with_images.id IS NOT NULL THEN 1 
+        ELSE 0 
+    END AS has_all_versions,
+    CASE 
+        WHEN pd.id IS NULL AND dv.id IS NULL 
+             AND mv_no_images.id IS NULL AND mv_with_images.id IS NULL THEN 1 
+        ELSE 0 
+    END AS has_no_versions
+FROM research_articles ra
+LEFT JOIN (
+    -- Get the most recent successful PDF download per record
+    SELECT pd1.*
+    FROM pdf_downloads pd1
+    INNER JOIN (
+        SELECT record_id, MAX(id) AS max_id
+        FROM pdf_downloads
+        WHERE status = 'downloaded'
+        GROUP BY record_id
+    ) pd2 ON pd1.id = pd2.max_id
+) pd ON ra.id = pd.record_id
+LEFT JOIN (
+    -- Get the most recent DOCX version per record
+    SELECT dv1.*
+    FROM docx_versions dv1
+    INNER JOIN (
+        SELECT record_id, MAX(id) AS max_id
+        FROM docx_versions
+        GROUP BY record_id
+    ) dv2 ON dv1.id = dv2.max_id
+) dv ON ra.id = dv.record_id
+LEFT JOIN (
+    -- Get the most recent Markdown version per record (no_images variant)
+    SELECT mv1.*
+    FROM markdown_versions mv1
+    INNER JOIN (
+        SELECT record_id, MAX(id) AS max_id
+        FROM markdown_versions
+        WHERE variant = 'no_images'
+        GROUP BY record_id
+    ) mv2 ON mv1.id = mv2.max_id
+) mv_no_images ON ra.id = mv_no_images.record_id
+LEFT JOIN (
+    -- Get the most recent Markdown version per record (with_images variant)
+    SELECT mv1.*
+    FROM markdown_versions mv1
+    INNER JOIN (
+        SELECT record_id, MAX(id) AS max_id
+        FROM markdown_versions
+        WHERE variant = 'with_images'
+        GROUP BY record_id
+    ) mv2 ON mv1.id = mv2.max_id
+) mv_with_images ON ra.id = mv_with_images.record_id;
+"""
 
 
 @contextmanager
@@ -141,6 +264,39 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 
+def _migrate_add_file_size_columns() -> None:
+    """Add file_size_bytes columns to existing tables if they don't exist."""
+    log.info("running_file_size_migration")
+    with get_conn() as conn:
+        cur = conn.cursor()
+        
+        # Check and add file_size_bytes to pdf_downloads table
+        cur.execute("PRAGMA table_info(pdf_downloads)")
+        pdf_columns = [col[1] for col in cur.fetchall()]
+        if "file_size_bytes" not in pdf_columns:
+            log.info("adding_file_size_bytes_to_pdf_downloads")
+            cur.execute("ALTER TABLE pdf_downloads ADD COLUMN file_size_bytes INTEGER")
+            conn.commit()
+        
+        # Check and add file_size_bytes to docx_versions table
+        cur.execute("PRAGMA table_info(docx_versions)")
+        docx_columns = [col[1] for col in cur.fetchall()]
+        if "file_size_bytes" not in docx_columns:
+            log.info("adding_file_size_bytes_to_docx_versions")
+            cur.execute("ALTER TABLE docx_versions ADD COLUMN file_size_bytes INTEGER")
+            conn.commit()
+        
+        # Check and add file_size_bytes to markdown_versions table
+        cur.execute("PRAGMA table_info(markdown_versions)")
+        markdown_columns = [col[1] for col in cur.fetchall()]
+        if "file_size_bytes" not in markdown_columns:
+            log.info("adding_file_size_bytes_to_markdown_versions")
+            cur.execute("ALTER TABLE markdown_versions ADD COLUMN file_size_bytes INTEGER")
+            conn.commit()
+    
+    log.info("file_size_migration_completed")
+
+
 def init_db() -> None:
     log.info("initializing_database", path=str(DB_PATH))
     with get_conn() as conn:
@@ -150,9 +306,17 @@ def init_db() -> None:
         conn.execute(CREATE_RECORDS_FILTERINGS_TABLE_SQL)
         conn.execute(CREATE_PDF_RESOLUTIONS_TABLE_SQL)
         conn.execute(CREATE_PDF_DOWNLOADS_TABLE_SQL)
+        conn.execute(CREATE_DOCX_VERSIONS_TABLE_SQL)
+        conn.execute(CREATE_MARKDOWN_VERSIONS_TABLE_SQL)
         for index_sql in CREATE_INDEXES_SQL:
             conn.execute(index_sql)
+        # Create the article versions view
+        conn.execute(CREATE_ARTICLE_FILE_VERSIONS_VIEW_SQL)
         conn.commit()
+    
+    # Run migration to add file_size_bytes columns if needed
+    _migrate_add_file_size_columns()
+    
     log.info("database_initialized", path=str(DB_PATH))
 
 
@@ -873,6 +1037,7 @@ def record_pdf_download_attempt(
     pdf_local_path: str | None = None,
     sha1: str | None = None,
     final_url: str | None = None,
+    file_size_bytes: int | None = None,
     error_message: str | None = None,
 ) -> int | None:
     """
@@ -888,6 +1053,7 @@ def record_pdf_download_attempt(
         pdf_local_path: Local path if downloaded
         sha1: SHA1 hash if downloaded
         final_url: Final URL after redirects
+        file_size_bytes: Size of the PDF file in bytes (if downloaded)
         error_message: Error message if failed
 
     Returns:
@@ -910,7 +1076,7 @@ def record_pdf_download_attempt(
                 """
                 UPDATE pdf_downloads 
                 SET download_attempt_datetime = ?, url = ?, source = ?, status = ?,
-                    pdf_local_path = ?, sha1 = ?, final_url = ?, error_message = ?
+                    pdf_local_path = ?, sha1 = ?, final_url = ?, file_size_bytes = ?, error_message = ?
                 WHERE id = ?
                 """,
                 (
@@ -921,6 +1087,7 @@ def record_pdf_download_attempt(
                     pdf_local_path,
                     sha1,
                     final_url,
+                    file_size_bytes,
                     error_message,
                     download_id,
                 ),
@@ -931,6 +1098,7 @@ def record_pdf_download_attempt(
                 download_id=download_id,
                 record_id=record_id,
                 status=status,
+                file_size_bytes=file_size_bytes,
             )
         else:
             # Insert new download attempt
@@ -938,8 +1106,8 @@ def record_pdf_download_attempt(
                 """
                 INSERT INTO pdf_downloads 
                 (record_id, download_attempt_datetime, url, source, status,
-                 pdf_local_path, sha1, final_url, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 pdf_local_path, sha1, final_url, file_size_bytes, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record_id,
@@ -950,6 +1118,7 @@ def record_pdf_download_attempt(
                     pdf_local_path,
                     sha1,
                     final_url,
+                    file_size_bytes,
                     error_message,
                 ),
             )
@@ -960,9 +1129,91 @@ def record_pdf_download_attempt(
                 download_id=download_id,
                 record_id=record_id,
                 status=status,
+                file_size_bytes=file_size_bytes,
             )
         
         return download_id
+
+
+def insert_docx_version(
+    record_id: int,
+    docx_local_path: str | None,
+    retrieved_attempt_datetime: str,
+    file_size_bytes: int | None = None,
+    error_message: str | None = None,
+) -> int | None:
+    """Insert a docx version entry tied to a record.
+    
+    Args:
+        record_id: ID of the record
+        docx_local_path: Path to the DOCX file
+        retrieved_attempt_datetime: ISO format timestamp of retrieval
+        file_size_bytes: Size of the DOCX file in bytes
+        error_message: Error message if retrieval failed
+        
+    Returns:
+        ID of the inserted docx_versions row
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO docx_versions (record_id, retrieved_attempt_datetime, docx_local_path, file_size_bytes, error_message)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (record_id, retrieved_attempt_datetime, docx_local_path, file_size_bytes, error_message),
+        )
+        conn.commit()
+        log.debug(
+            "docx_version_inserted",
+            docx_id=cur.lastrowid,
+            record_id=record_id,
+            file_size_bytes=file_size_bytes,
+        )
+        return cur.lastrowid
+
+
+def insert_markdown_version(
+    record_id: int,
+    docx_version_id: int | None,
+    variant: str,
+    md_local_path: str | None,
+    created_datetime: str,
+    file_size_bytes: int | None = None,
+    error_message: str | None = None,
+) -> int | None:
+    """Insert a markdown version entry tied to a record and optional docx_version.
+    
+    Args:
+        record_id: ID of the record
+        docx_version_id: ID of the source DOCX version (if applicable)
+        variant: Markdown variant ('no_images' or 'with_images')
+        md_local_path: Path to the markdown file
+        created_datetime: ISO format timestamp of creation
+        file_size_bytes: Size of the markdown file in bytes
+        error_message: Error message if conversion failed
+        
+    Returns:
+        ID of the inserted markdown_versions row
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO markdown_versions (record_id, docx_version_id, created_datetime, variant, md_local_path, file_size_bytes, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (record_id, docx_version_id, created_datetime, variant, md_local_path, file_size_bytes, error_message),
+        )
+        conn.commit()
+        log.debug(
+            "markdown_version_inserted",
+            markdown_id=cur.lastrowid,
+            record_id=record_id,
+            variant=variant,
+            file_size_bytes=file_size_bytes,
+        )
+        return cur.lastrowid
 
 
 def create_article_version_relation(

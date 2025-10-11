@@ -1,5 +1,6 @@
 import asyncio
 import random
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -7,12 +8,15 @@ from typing import Any
 import httpx
 
 from ..core.hashing import sha1_bytes
+from ..utils.files import sanitize_text_for_filename
 from ..utils.http import get_with_retry
 from ..utils.log import get_logger
 
 log = get_logger(__name__)
 
 MAX_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
+DOCX_DIR = Path("data/docx")
+MD_OUTPUT_DIR = Path("data/markdown")
 
 
 def _get_pdf_headers(url: str, source: str | None = None) -> dict[str, str]:
@@ -109,14 +113,18 @@ async def download_pdf(candidate: dict[str, Any], dest_dir: Path) -> dict[str, A
                 sha1 = sha1_bytes(resp.content)
                 pdf_path = dest_dir / f"{sha1}.pdf"
                 pdf_path.write_bytes(resp.content)
+                
+                # Get actual file size from written file for accuracy
+                file_size_bytes = pdf_path.stat().st_size
 
-                log.info("pdf_downloaded", url=url, sha1=sha1, size=content_length, source=source)
+                log.info("pdf_downloaded", url=url, sha1=sha1, size=file_size_bytes, source=source)
                 return {
                     "status": "downloaded",
                     "path": str(pdf_path),
                     "sha1": sha1,
                     "final_url": str(resp.url),
                     "url": url,
+                    "file_size_bytes": file_size_bytes,
                 }
             else:
                 log.warning("pdf_wrong_content_type", url=url, content_type=content_type, source=source)
@@ -142,3 +150,117 @@ async def download_pdf(candidate: dict[str, Any], dest_dir: Path) -> dict[str, A
     except Exception as e:
         log.exception("pdf_unexpected_error", url=url, source=source)
         return {"status": "error", "url": url, "error": f"Unexpected error: {e!s}"}
+
+
+def get_docx_for_pdf(pdf_path: Path) -> Path | None:
+    """Try to find a corresponding .docx file in the DOCX_DIR using the PDF filename stem.
+
+    Matching rules (deterministic):
+    - Use pdf_path.stem (filename without extension).
+    - Check DOCX_DIR for files with same stem + .docx (case-insensitive).
+    - Also try a sanitized version of the stem (remove unsafe chars) to match common filename variants.
+
+    Returns Path to the docx file if found, otherwise None.
+    """
+    try:
+        stem = pdf_path.stem
+        # Direct exact match
+        candidate = DOCX_DIR / f"{stem}.docx"
+        if candidate.exists():
+            log.info("docx_found_exact", pdf=str(pdf_path), docx=str(candidate))
+            return candidate
+
+        # Case-insensitive search and sanitized match
+        sanitized = sanitize_text_for_filename(stem)
+        for p in DOCX_DIR.glob("*.docx"):
+            if p.stem.lower() == stem.lower() or p.stem == sanitized:
+                log.info("docx_found_variant", pdf=str(pdf_path), docx=str(p))
+                return p
+
+        # Fallback: look for any docx whose stem is contained in pdf stem or vice versa
+        for p in DOCX_DIR.glob("*.docx"):
+            if p.stem.lower() in stem.lower() or stem.lower() in p.stem.lower():
+                log.info("docx_found_fuzzy", pdf=str(pdf_path), docx=str(p))
+                return p
+
+    except Exception as e:
+        log.error("docx_lookup_error", pdf=str(pdf_path), error=str(e))
+
+    log.debug("docx_not_found", pdf=str(pdf_path))
+    return None
+
+
+def _run_cmd(cmd: str, timeout: int = 60) -> tuple[int, str, str]:
+    """Run a shell command (string) and return (returncode, stdout, stderr)."""
+    try:
+        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as e:
+        return 124, "", f"Timeout: {e!s}"
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def convert_docx_to_markdown_versions(docx_path: Path, output_dir: Path | None = None) -> dict[str, str | None]:
+    """Create two markdown versions from a docx using pandoc.
+
+    - No-images md: pandoc -s -t markdown_strict "file.docx" -o "file-no images.md"
+    - With-images md: pandoc -s -t html --embed-resources=true "file.docx" | pandoc -f html -t markdown_strict -o "file.md"
+
+    Returns dict with keys: docx, md_no_images, md_with_images and values as string paths or None on failure.
+    """
+    output_dir = Path(output_dir or MD_OUTPUT_DIR)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = docx_path.stem
+    md_no_images = output_dir / f"{base_name}-no images.md"
+    md_with_images = output_dir / f"{base_name}.md"
+
+    results: dict[str, str | None] = {
+        "docx": str(docx_path),
+        "md_no_images": None,
+        "md_with_images": None,
+    }
+
+    # 1) No images conversion
+    try:
+        cmd1 = ["pandoc", "-s", "-t", "markdown_strict", str(docx_path), "-o", str(md_no_images)]
+        log.debug("pandoc_cmd_no_images", cmd=cmd1)
+        proc1 = subprocess.run(cmd1, capture_output=True, text=True, timeout=120)
+        if proc1.returncode == 0 and md_no_images.exists():
+            results["md_no_images"] = str(md_no_images)
+            log.info("pandoc_no_images_success", docx=str(docx_path), out=str(md_no_images))
+        else:
+            log.error(
+                "pandoc_no_images_failed",
+                docx=str(docx_path),
+                rc=proc1.returncode,
+                stderr=proc1.stderr,
+            )
+    except subprocess.TimeoutExpired as e:
+        log.error("pandoc_no_images_timeout", docx=str(docx_path), error=str(e))
+    except Exception as e:
+        log.exception("pandoc_no_images_exception", docx=str(docx_path), error=str(e))
+
+    # 2) With images conversion via HTML embedding (create HTML with embedded resources, pipe to pandoc)
+    try:
+        # Use shell pipe to convert docx -> html with embedded resources -> markdown in one step
+        cmd_with_images = f'pandoc -s -t html --embed-resources=true "{docx_path}" | pandoc -f html -t markdown_strict -o "{md_with_images}"'
+        log.debug("pandoc_cmd_with_images", cmd=cmd_with_images)
+        proc = subprocess.run(cmd_with_images, shell=True, capture_output=True, text=True, timeout=240)
+        if proc.returncode == 0 and md_with_images.exists():
+            results["md_with_images"] = str(md_with_images)
+            log.info("pandoc_with_images_success", docx=str(docx_path), out=str(md_with_images))
+        else:
+            log.error(
+                "pandoc_with_images_failed",
+                docx=str(docx_path),
+                rc=proc.returncode,
+                stderr=proc.stderr,
+            )
+    except subprocess.TimeoutExpired as e:
+        log.error("pandoc_with_images_timeout", docx=str(docx_path), error=str(e))
+    except Exception as e:
+        log.exception("pandoc_with_images_exception", docx=str(docx_path), error=str(e))
+
+    return results

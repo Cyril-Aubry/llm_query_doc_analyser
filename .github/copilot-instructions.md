@@ -29,15 +29,15 @@
   - All new code must use type hints and docstrings (PEP 8/PEP 484).
 
 ## Developer Workflows
-- **Install:** Use `uv pip install` (preferred) or `pip install -r requirements.txt`.
-- **Run CLI:**
-  - `python -m llm_query_doc_analyser --help`
-  - Example pipeline:
-    - `python -m llm_query_doc_analyser import data/input/records.xlsx`
-    - `python -m llm_query_doc_analyser enrich`
-    - `python -m llm_query_doc_analyser filter --query "..."`
-    - `python -m llm_query_doc_analyser pdfs`
-    - `python -m llm_query_doc_analyser export outputs/results.xlsx`
+- **Install & Setup:** Use `uv` for all environment and dependency management. Example:
+  - Install dependencies: `uv sync`
+- `uv run llm_query_doc_analyser --help`
+- Example pipeline:
+  - `uv run llm_query_doc_analyser import data/input/records.xlsx`
+  - `uv run llm_query_doc_analyser enrich`
+  - `uv run llm_query_doc_analyser filter --query "..."`
+  - `uv run llm_query_doc_analyser pdfs`
+  - `uv run llm_query_doc_analyser export outputs/results.xlsx`
 - **Lint/Type Check:**
   - `uv run ruff check src`
   - `uv run mypy src`
@@ -51,9 +51,37 @@
 ## Examples & References
 - **Input/Output:** See `data/input/`, `outputs/`, and `io_/` modules.
 - **Enrichment:** See `enrich/orchestrator.py` for API orchestration logic.
-- **Filtering:** See `filter_rank/` and `enrich/embed.py` for semantic filtering patterns.
+- **Filtering:** See `filter_rank/`.
 - **PDF Handling:** See `pdfs/` for OA PDF resolution and download logic.
 
+## Implementation Summaries & Notes
+
+- Purpose: When changes are implemented, the model should offer to record a concise implementation summary and explanation in a markdown file, but must not generate or output such notes automatically.
+- Interaction pattern:
+  - After completing any non-trivial implementation, modification, or update, prompt the user with a single question: "Would you like a markdown summary recorded for this change? (yes/no)". Do not create the summary unless the user answers "yes".
+  - If the user answers "yes", ask follow-up questions to confirm:
+    - Target path or filename (suggest defaults: `docs/IMPLEMENTATION_NOTES.md`, `docs/CHANGELOG.md`, or `docs/implementation/YYYY-MM-DD.md`).
+    - Whether to append to the chosen file or create a new file.
+    - Whether any sensitive or private information should be omitted.
+- Format & required fields: When the user requests a summary, produce a markdown entry using the following minimum structure:
+  - Title: short descriptive heading
+  - Date: ISO 8601 timestamp
+  - Author: (ask or infer from environment; allow user override)
+  - Scope: high-level scope (e.g., "enrich/orchestrator: add async retries")
+  - Summary: 2–5 sentence description of what was implemented or changed
+  - Files changed: bullet list of paths
+  - Rationale: brief explanation why the change was made
+  - Notes: any migration steps, breaking changes, or follow-ups
+  - Provenance: any relevant issue/PR numbers and links
+- Style and constraints:
+  - Keep entries concise and focused on actionable implementation details.
+  - Do not include raw secrets, credentials, or sensitive data in summaries.
+  - Use markdown headings and bullet lists; ensure plain-text compatibility.
+- Confirmation prior to writing:
+  - After generating the draft summary, present it to the user and ask for confirmation before writing to disk.
+  - Allow user edits (inline or via a simple re-prompt) before the final write.
+- Automation guard:
+  - Under no circumstances should the model auto-commit, auto-push, or auto-save summaries without explicit user consent and confirmation of file path and write mode.
 ---
 
 If any section is unclear or missing, please provide feedback for further refinement.

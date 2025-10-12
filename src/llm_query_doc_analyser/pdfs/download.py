@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from ..core.config import get_config
 from ..core.hashing import sha1_bytes
 from ..utils.files import sanitize_text_for_filename
 from ..utils.http import get_with_retry
@@ -15,8 +16,20 @@ from ..utils.log import get_logger
 log = get_logger(__name__)
 
 MAX_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
+
+# Legacy constants for backward compatibility - use get_config() instead
 DOCX_DIR = Path("data/docx")
 MD_OUTPUT_DIR = Path("data/markdown")
+
+
+def _get_docx_dir() -> Path:
+    """Get current DOCX directory from configuration."""
+    return get_config().docx_dir
+
+
+def _get_markdown_dir() -> Path:
+    """Get current Markdown directory from configuration."""
+    return get_config().markdown_dir
 
 
 def _get_pdf_headers(url: str, source: str | None = None) -> dict[str, str]:
@@ -153,32 +166,33 @@ async def download_pdf(candidate: dict[str, Any], dest_dir: Path) -> dict[str, A
 
 
 def get_docx_for_pdf(pdf_path: Path) -> Path | None:
-    """Try to find a corresponding .docx file in the DOCX_DIR using the PDF filename stem.
+    """Try to find a corresponding .docx file in the configured DOCX directory using the PDF filename stem.
 
     Matching rules (deterministic):
     - Use pdf_path.stem (filename without extension).
-    - Check DOCX_DIR for files with same stem + .docx (case-insensitive).
+    - Check DOCX directory for files with same stem + .docx (case-insensitive).
     - Also try a sanitized version of the stem (remove unsafe chars) to match common filename variants.
 
     Returns Path to the docx file if found, otherwise None.
     """
+    docx_dir = _get_docx_dir()
     try:
         stem = pdf_path.stem
         # Direct exact match
-        candidate = DOCX_DIR / f"{stem}.docx"
+        candidate = docx_dir / f"{stem}.docx"
         if candidate.exists():
             log.info("docx_found_exact", pdf=str(pdf_path), docx=str(candidate))
             return candidate
 
         # Case-insensitive search and sanitized match
         sanitized = sanitize_text_for_filename(stem)
-        for p in DOCX_DIR.glob("*.docx"):
+        for p in docx_dir.glob("*.docx"):
             if p.stem.lower() == stem.lower() or p.stem == sanitized:
                 log.info("docx_found_variant", pdf=str(pdf_path), docx=str(p))
                 return p
 
         # Fallback: look for any docx whose stem is contained in pdf stem or vice versa
-        for p in DOCX_DIR.glob("*.docx"):
+        for p in docx_dir.glob("*.docx"):
             if p.stem.lower() in stem.lower() or stem.lower() in p.stem.lower():
                 log.info("docx_found_fuzzy", pdf=str(pdf_path), docx=str(p))
                 return p
@@ -209,7 +223,11 @@ def convert_docx_to_markdown_versions(docx_path: Path, output_dir: Path | None =
 
     Returns dict with keys: docx, md_no_images, md_with_images and values as string paths or None on failure.
     """
-    output_dir = Path(output_dir or MD_OUTPUT_DIR)
+    # Use configured markdown directory if not specified
+    if output_dir is None:
+        output_dir = _get_markdown_dir()
+    else:
+        output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_name = docx_path.stem

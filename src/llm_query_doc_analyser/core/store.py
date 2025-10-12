@@ -6,12 +6,19 @@ from pathlib import Path
 from typing import Any
 
 from ..utils.log import get_logger
+from .config import get_config
 from .models import Record  # Ensure the Record class is defined in models.py
 
 log = get_logger(__name__)
 
 
+# Legacy constant for backward compatibility - use get_config().db_path instead
 DB_PATH = Path("data/cache/research_articles_management.db")
+
+
+def _get_db_path() -> Path:
+    """Get current database path from configuration."""
+    return get_config().db_path
 
 CREATE_RESEARCH_ARTICLES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS research_articles (
@@ -249,8 +256,9 @@ LEFT JOIN (
 
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    db_path = _get_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
     try:
         # Reduce chance of WAL leftovers & enforce FK
         conn.execute("PRAGMA journal_mode=DELETE")
@@ -298,7 +306,8 @@ def _migrate_add_file_size_columns() -> None:
 
 
 def init_db() -> None:
-    log.info("initializing_database", path=str(DB_PATH))
+    db_path = _get_db_path()
+    log.info("initializing_database", path=str(db_path), mode=get_config().mode)
     with get_conn() as conn:
         conn.execute(CREATE_RESEARCH_ARTICLES_TABLE_SQL)
         conn.execute(CREATE_ARTICLE_VERSIONS_TABLE_SQL)
@@ -317,7 +326,7 @@ def init_db() -> None:
     # Run migration to add file_size_bytes columns if needed
     _migrate_add_file_size_columns()
     
-    log.info("database_initialized", path=str(DB_PATH))
+    log.info("database_initialized", path=str(db_path), mode=get_config().mode)
 
 
 def insert_record(rec: Record) -> int:
@@ -386,7 +395,8 @@ def insert_record(rec: Record) -> int:
 
 
 def get_records() -> list[Record]:
-    log.debug("fetching_records_from_db", path=str(DB_PATH))
+    db_path = _get_db_path()
+    log.debug("fetching_records_from_db", path=str(db_path))
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM research_articles")
@@ -402,7 +412,7 @@ def get_records() -> list[Record]:
                     if isinstance(v, str):
                         data["provenance"][k] = {"raw": v}
             records.append(Record(**data))
-        log.info("records_fetched", count=len(records), path=str(DB_PATH))
+        log.info("records_fetched", count=len(records), path=str(db_path))
         return records
 
 

@@ -10,9 +10,9 @@ import structlog
 import typer
 from dotenv import load_dotenv
 
+from .core.config import get_config, is_test_mode, set_production_mode, set_test_mode
 from .core.models import Record
 from .core.store import (
-    DB_PATH,
     batch_insert_filtering_results,
     create_filtering_query,
     filter_already_downloaded_records,
@@ -61,8 +61,15 @@ def callback(
         False, "--quiet", "-q", help="Suppress console log output (logs still written to file)"
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose (DEBUG) logging"),
+    test: bool = typer.Option(
+        False, "--test", help="Use test environment (separate database and file directories)"
+    ),
 ) -> None:
-    """Initialize application with structured logging."""
+    """Initialize application with structured logging and environment configuration."""
+    # Set environment mode
+    if test:
+        set_test_mode()
+    
     # Determine log level
     log_level = "DEBUG" if verbose else os.getenv("LOG_LEVEL", "INFO")
 
@@ -82,6 +89,9 @@ def callback(
             log_file=str(_log_state["log_file"]),
             quiet=quiet,
             verbose=verbose,
+            test_mode=test,
+            environment=get_config().mode,
+            db_path=str(get_config().db_path),
         )
 
 
@@ -108,7 +118,7 @@ session_id = _log_state["session_id"]
 
 
 @app.command()
-def import_(path: Path) -> None:
+def import_articles(path: Path) -> None:
     """Import CSV/XLSX into DB or memory, normalize DOIs."""
     log.info("import_started", path=str(path))
     init_db()
@@ -472,7 +482,7 @@ def filter(
     if warning_count > 0:
         typer.echo(f"  Warning articles (missing explanation): {warning_count}")
     typer.echo(f"  Filtering query ID: {filtering_query_id}")
-    typer.echo(f"\nResults stored in database: {DB_PATH}")
+    typer.echo(f"\nResults stored in database: {get_config().db_path}")
 
     # Optional export
     if export_path:
@@ -522,9 +532,9 @@ def pdfs(
     # Initialize database
     init_db()
 
-    # Resolve default destination if not provided (avoid calling Path() at import time)
+    # Resolve default destination if not provided - use configured directory
     if dest is None:
-        dest = Path("data/pdfs")
+        dest = get_config().pdf_dir
 
     # Get matched records from filtering query
     typer.echo(f"\nFetching matched records from filtering query {filtering_query_id}...")
@@ -788,7 +798,7 @@ def pdfs(
     typer.echo(f"  Too large: {stats.get('too_large', 0)}")
     typer.echo(f"  Errors: {stats.get('error', 0)}")
     typer.echo(f"\nPDFs saved to: {dest}")
-    typer.echo(f"Results stored in database: {DB_PATH}")
+    typer.echo(f"Results stored in database: {get_config().db_path}")
 
 
 def _retrieve_docx_for_record(record_id: int, pdf_path: Path | None = None) -> dict[str, Any]:
@@ -987,7 +997,7 @@ def batch_docx_retrieve() -> None:
     typer.echo(f"  DOCX found: {success_count}")
     typer.echo(f"  DOCX not found: {not_found_count}")
     typer.echo(f"  Errors: {error_count}")
-    typer.echo(f"\nResults stored in database: {DB_PATH}")
+    typer.echo(f"\nResults stored in database: {get_config().db_path}")
 
     log.info(
         "batch_docx_retrieve_completed",
@@ -1274,7 +1284,7 @@ def batch_docx_to_markdown() -> None:
     typer.echo(f"  Partial success (one variant): {partial_success_count}")
     typer.echo(f"  Failed (no variants): {failed_count}")
     typer.echo(f"  Errors: {error_count}")
-    typer.echo(f"\nResults stored in database: {DB_PATH}")
+    typer.echo(f"\nResults stored in database: {get_config().db_path}")
 
     log.info(
         "batch_docx_to_markdown_completed",

@@ -20,6 +20,7 @@ logs/
 # Data and output directories
 data/
 outputs/
+test_data/
 
 # pytest cache
 .pytest_cache/

@@ -305,6 +305,103 @@ def _migrate_add_file_size_columns() -> None:
     log.info("file_size_migration_completed")
 
 
+def update_pdf_file_sizes() -> dict[str, int]:
+    """
+    Update file_size_bytes for existing PDF downloads that have a local file but no size recorded.
+    
+    This utility function scans the pdf_downloads table for records with:
+    - status = 'downloaded'
+    - pdf_local_path is not NULL
+    - file_size_bytes is NULL
+    
+    For each such record, it reads the actual file size from disk and updates the database.
+    
+    Returns:
+        Dictionary with statistics:
+        - 'checked': Number of records checked
+        - 'updated': Number of records updated successfully
+        - 'missing': Number of files not found on disk
+        - 'errors': Number of errors encountered
+    """
+    log.info("starting_pdf_file_size_update")
+    
+    stats = {
+        'checked': 0,
+        'updated': 0,
+        'missing': 0,
+        'errors': 0
+    }
+    
+    with get_conn() as conn:
+        cur = conn.cursor()
+        
+        # Find all downloaded PDFs without file size
+        cur.execute(
+            """
+            SELECT id, pdf_local_path 
+            FROM pdf_downloads 
+            WHERE status = 'downloaded' 
+            AND pdf_local_path IS NOT NULL 
+            AND file_size_bytes IS NULL
+            """
+        )
+        rows = cur.fetchall()
+        stats['checked'] = len(rows)
+        
+        log.info("found_pdfs_without_size", count=stats['checked'])
+        
+        for download_id, pdf_path in rows:
+            try:
+                pdf_file = Path(pdf_path)
+                
+                if not pdf_file.exists():
+                    log.warning(
+                        "pdf_file_not_found",
+                        download_id=download_id,
+                        path=str(pdf_path)
+                    )
+                    stats['missing'] += 1
+                    continue
+                
+                # Get file size in bytes
+                file_size = pdf_file.stat().st_size
+                
+                # Update the database
+                cur.execute(
+                    "UPDATE pdf_downloads SET file_size_bytes = ? WHERE id = ?",
+                    (file_size, download_id)
+                )
+                
+                stats['updated'] += 1
+                log.debug(
+                    "pdf_file_size_updated",
+                    download_id=download_id,
+                    file_size_bytes=file_size,
+                    path=str(pdf_path)
+                )
+                
+            except Exception as e:
+                log.error(
+                    "failed_to_update_pdf_file_size",
+                    download_id=download_id,
+                    path=str(pdf_path),
+                    error=str(e)
+                )
+                stats['errors'] += 1
+        
+        conn.commit()
+    
+    log.info(
+        "pdf_file_size_update_completed",
+        checked=stats['checked'],
+        updated=stats['updated'],
+        missing=stats['missing'],
+        errors=stats['errors']
+    )
+    
+    return stats
+
+
 def init_db() -> None:
     db_path = _get_db_path()
     log.info("initializing_database", path=str(db_path), mode=get_config().mode)

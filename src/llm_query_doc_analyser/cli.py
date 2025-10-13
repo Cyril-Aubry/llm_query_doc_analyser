@@ -801,6 +801,251 @@ def pdfs(
     typer.echo(f"Results stored in database: {get_config().db_path}")
 
 
+@app.command()
+def htmls(
+    filtering_query_id: int = typer.Option(
+        ..., "--query-id", help="Filtering query ID to download HTML pages for"
+    ),
+    dest: Path | None = typer.Option(None, "--dest", "-d", help="Destination directory for HTML files"),  # noqa: B008
+    max_concurrent: int = typer.Option(3, help="Maximum concurrent downloads"),
+) -> None:
+    """Download full-text HTML pages for preprint records from a filtering query.
+
+    Downloads HTML versions of preprints with embedded base64 images using single-file-cli.
+    Only works for preprint sources (arXiv, bioRxiv, medRxiv, Preprints.org).
+    """
+    from .pdfs.download_html import download_html_page
+    from .pdfs.html_urls import build_fulltext_html_url
+
+    timestamp = datetime.now(UTC).isoformat()
+    log = _get_logger()
+    log.info(
+        "html_download_started",
+        filtering_query_id=filtering_query_id,
+        destination=str(dest),
+        timestamp=timestamp,
+    )
+
+    # Initialize database
+    init_db()
+
+    # Resolve default destination if not provided
+    if dest is None:
+        dest = get_config().html_dir
+
+    # Ensure destination exists
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # Get matched records from filtering query
+    typer.echo(f"\nFetching matched records from filtering query {filtering_query_id}...")
+    matched_filtering_query_records = get_matched_records_by_filtering_query(filtering_query_id)
+
+    if not matched_filtering_query_records:
+        log.warning("no_matched_records_found", filtering_query_id=filtering_query_id)
+        typer.echo("No matched records found for this filtering query.")
+        return
+
+    typer.echo(f"Found {len(matched_filtering_query_records)} matched records to process.")
+    typer.echo(f"Destination: {dest}")
+
+    # Filter to only preprint records
+    preprint_records = [rec for rec in matched_filtering_query_records if rec.is_preprint]
+    non_preprint_count = len(matched_filtering_query_records) - len(preprint_records)
+
+    if non_preprint_count > 0:
+        log.info(
+            "non_preprints_skipped",
+            total=len(matched_filtering_query_records),
+            preprints=len(preprint_records),
+            non_preprints=non_preprint_count,
+        )
+        typer.echo(f"  Preprints: {len(preprint_records)} records")
+        typer.echo(f"  Non-preprints (skipped): {non_preprint_count} records")
+
+    if not preprint_records:
+        log.warning("no_preprint_records_found", filtering_query_id=filtering_query_id)
+        typer.echo("No preprint records found for HTML download.")
+        return
+
+    # Filter records to only those not already downloaded
+    from .core.store import filter_already_downloaded_html
+
+    records_needing_download = filter_already_downloaded_html(preprint_records)
+    already_downloaded_count = len(preprint_records) - len(records_needing_download)
+
+    log.info(
+        "html_download_filtering",
+        total_preprints=len(preprint_records),
+        already_downloaded=already_downloaded_count,
+        needs_download=len(records_needing_download),
+    )
+
+    typer.echo(f"  Already downloaded: {already_downloaded_count} records")
+    typer.echo(f"  Need download: {len(records_needing_download)} records")
+
+    if not records_needing_download:
+        typer.echo("  All preprint records already have HTML downloaded. Skipping.")
+        
+        # Get final statistics
+        from .core.store import get_html_download_stats
+        stats = get_html_download_stats(filtering_query_id)
+        
+        typer.echo("\nHTML Download Results:")
+        typer.echo(f"  Total preprints: {len(preprint_records)}")
+        typer.echo(f"  Downloaded: {stats.get('downloaded', 0)}")
+        typer.echo(f"  Errors: {stats.get('error', 0)}")
+        typer.echo(f"  No URL: {stats.get('no_url', 0)}")
+        return
+
+    # Statistics
+    downloaded_count = 0
+    error_count = 0
+    no_url_count = 0
+    timeout_count = 0
+
+    # Rate limiters for HTML downloads (source-specific politeness)
+    # HTML pages are more resource-intensive to serve, so be more conservative
+    rate_limiters = {
+        "arxiv": RateLimiter(calls_per_second=0.1),  # arXiv: 1 call per 10 seconds (very strict)
+        "biorxiv": RateLimiter(calls_per_second=0.2),  # bioRxiv: 1 call per 5 seconds
+        "medrxiv": RateLimiter(calls_per_second=0.2),  # medRxiv: 1 call per 5 seconds
+        "preprints": RateLimiter(calls_per_second=0.2),  # Preprints: 1 call per 5 seconds
+        "default": RateLimiter(calls_per_second=0.2),  # Conservative default
+    }
+
+    # Process each record for download
+    async def download_record_html(rec: Record) -> None:
+        nonlocal downloaded_count, error_count, no_url_count, timeout_count
+
+        # Build full-text HTML URL
+        url = build_fulltext_html_url(rec)
+        if not url:
+            no_url_count += 1
+            log.debug("no_html_url_for_record", record_id=rec.id, doi=rec.doi_norm)
+            # Store a "no url" download record
+            from .core.store import record_html_download_attempt
+
+            record_html_download_attempt(
+                record_id=rec.id,
+                url="",
+                source=rec.preprint_source or "unknown",
+                status="no_url",
+                download_attempt_datetime=timestamp,
+                error_message="Cannot construct HTML URL for this preprint source",
+            )
+            return
+
+        # Apply source-specific rate limiting
+        source = rec.preprint_source.lower() if rec.preprint_source else "unknown"
+        limiter = rate_limiters.get(source, rate_limiters["default"])
+        await limiter.acquire()
+
+        try:
+            result = await download_html_page(url, dest, rec.title, source)
+            status = result.get("status")
+
+            from .core.store import record_html_download_attempt
+
+            # Record the download attempt
+            if status == "downloaded":
+                record_html_download_attempt(
+                    record_id=rec.id,
+                    url=url,
+                    source=source,
+                    status=status,
+                    download_attempt_datetime=timestamp,
+                    html_local_path=result.get("path"),
+                    file_size_bytes=result.get("file_size_bytes"),
+                    error_message=None,
+                )
+                downloaded_count += 1
+                log.info(
+                    "html_downloaded",
+                    record_id=rec.id,
+                    doi=rec.doi_norm,
+                    source=source,
+                    path=result.get("path"),
+                    file_size_bytes=result.get("file_size_bytes"),
+                )
+            elif status == "timeout":
+                record_html_download_attempt(
+                    record_id=rec.id,
+                    url=url,
+                    source=source,
+                    status="error",
+                    download_attempt_datetime=timestamp,
+                    error_message=result.get("error"),
+                )
+                timeout_count += 1
+                log.warning("html_download_timeout", record_id=rec.id, url=url)
+            else:
+                # Error status
+                record_html_download_attempt(
+                    record_id=rec.id,
+                    url=url,
+                    source=source,
+                    status="error",
+                    download_attempt_datetime=timestamp,
+                    error_message=result.get("error"),
+                )
+                error_count += 1
+                log.debug("html_download_failed", record_id=rec.id, url=url, error=result.get("error"))
+
+        except Exception as e:
+            error_count += 1
+            log.error("html_download_exception", record_id=rec.id, doi=rec.doi_norm, url=url, error=str(e))
+            # Store error
+            from .core.store import record_html_download_attempt
+
+            record_html_download_attempt(
+                record_id=rec.id,
+                url=url,
+                source=source,
+                status="error",
+                download_attempt_datetime=timestamp,
+                error_message=str(e),
+            )
+
+    # Process only records needing download with concurrency limit
+    async def process_all_downloads() -> None:
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def download_with_semaphore(rec: Record) -> None:
+            async with semaphore:
+                await download_record_html(rec)
+
+        tasks = [download_with_semaphore(rec) for rec in records_needing_download]
+        await asyncio.gather(*tasks)
+
+    # Run download processing
+    typer.echo("\nDownloading HTML pages...")
+    asyncio.run(process_all_downloads())
+
+    # Get final statistics from database
+    from .core.store import get_html_download_stats
+
+    stats = get_html_download_stats(filtering_query_id)
+
+    log.info(
+        "html_download_completed",
+        filtering_query_id=filtering_query_id,
+        total_preprints=len(preprint_records),
+        stats=stats,
+        destination=str(dest),
+    )
+
+    # Display results
+    typer.echo("\nHTML Download Results:")
+    typer.echo(f"  Total preprints: {len(preprint_records)}")
+    typer.echo(f"  Already downloaded (skipped): {already_downloaded_count}")
+    typer.echo(f"  Successfully downloaded (new): {downloaded_count}")
+    typer.echo(f"  No URL: {no_url_count}")
+    typer.echo(f"  Timeouts: {timeout_count}")
+    typer.echo(f"  Errors: {error_count}")
+    typer.echo(f"\nHTML files saved to: {dest}")
+    typer.echo(f"Results stored in database: {get_config().db_path}")
+
+
 def _retrieve_docx_for_record(record_id: int, pdf_path: Path | None = None) -> dict[str, Any]:
     """Helper function to retrieve and record docx version for a record.
 

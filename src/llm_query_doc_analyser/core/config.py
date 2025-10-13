@@ -20,6 +20,7 @@ _DEFAULT_PRODUCTION_PATHS = {
     "pdf_dir": Path("data/pdfs"),
     "docx_dir": Path("data/docx"),
     "markdown_dir": Path("data/markdown"),
+    "html_dir": Path("data/html"),
     "cache_dir": Path("data/cache"),
 }
 
@@ -29,6 +30,7 @@ _DEFAULT_TEST_PATHS = {
     "pdf_dir": Path("test_data/pdfs"),
     "docx_dir": Path("test_data/docx"),
     "markdown_dir": Path("test_data/markdown"),
+    "html_dir": Path("test_data/html"),
     "cache_dir": Path("test_data/cache"),
 }
 
@@ -82,6 +84,11 @@ class EnvironmentConfig:
     def markdown_dir(self) -> Path:
         """Get Markdown storage directory."""
         return self._paths["markdown_dir"]
+    
+    @property
+    def html_dir(self) -> Path:
+        """Get HTML storage directory."""
+        return self._paths["html_dir"]
     
     @property
     def cache_dir(self) -> Path:

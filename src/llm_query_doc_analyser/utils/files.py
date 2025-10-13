@@ -2,7 +2,7 @@ import re
 from contextlib import suppress
 from pathlib import Path
 
-import nltk
+import nltk  # type: ignore
 import spacy
 
 INVALID_CHARS_RE = re.compile(r"[^\w\s\-\.,]", flags=re.U)
@@ -77,7 +77,7 @@ def shorten_text(text: str, max_chars: int) -> str:
     except Exception:
         # Try NLTK
         try:
-            from nltk.corpus import stopwords
+            from nltk.corpus import stopwords  # type: ignore
 
             try:
                 stops = set(stopwords.words("english"))
@@ -111,7 +111,7 @@ def shorten_text(text: str, max_chars: int) -> str:
         # As a last resort, truncate original sanitized text
         return sanitize_text_for_filename(text)[:max_chars].rstrip()
 
-    out_words = []
+    out_words: list[str] = []
     current_len = 0
     for w in words:
         add_len = (1 if out_words else 0) + len(w)  # space if not first
@@ -128,36 +128,73 @@ def shorten_text(text: str, max_chars: int) -> str:
     return first[:max_chars].rstrip()
 
 
-def make_safe_pdf_filename(title: str, max_length: int = 120) -> str:
-    """Produce a safe PDF filename from a title.
+def make_safe_filename(title: str, extension: str = "pdf", max_length: int = 120) -> str:
+    """Produce a safe filename from a title with specified extension.
 
-    Ensures reasonable length and a .pdf extension. Uniqueness is handled by collision checks
+    Ensures reasonable length. Uniqueness is handled by collision checks
     in the caller (numeric suffixes appended when needed).
+
+    Args:
+        title: Title text to convert to filename
+        extension: File extension without leading dot (e.g., 'pdf', 'html')
+        max_length: Maximum total filename length including extension
+
+    Returns:
+        Safe filename with extension
     """
     base = sanitize_text_for_filename(title)
     if not base:
         base = "document"
     # Do not include hashes in filenames per project policy; uniqueness handled by file collision checks
     suffix = ""
-    # Reserve 4 chars for extension
-    max_base = max_length - len(suffix) - 4
+    # Ensure extension has no leading dot
+    extension = extension.lstrip(".")
+    # Reserve space for extension (dot + extension length)
+    max_base = max_length - len(suffix) - len(extension) - 1
     base = shorten_text(base, max_base)
-    filename = f"{base}{suffix}.pdf"
+    filename = f"{base}{suffix}.{extension}"
     # Final safety: remove any leading/trailing dots or spaces
     filename = filename.strip().strip(".")
     return filename
 
 
-def rename_pdf_file(orig_path: Path, title: str, dest_dir: Path, max_length: int = 120) -> Path:
+def make_safe_pdf_filename(title: str, max_length: int = 120) -> str:
+    """Produce a safe PDF filename from a title.
+
+    Ensures reasonable length and a .pdf extension. Uniqueness is handled by collision checks
+    in the caller (numeric suffixes appended when needed).
+
+    This is a convenience wrapper around make_safe_filename() for backwards compatibility.
+    """
+    return make_safe_filename(title, extension="pdf", max_length=max_length)
+
+
+def rename_file(
+    orig_path: Path, title: str, dest_dir: Path, extension: str | None = None, max_length: int = 120
+) -> Path:
     """Move/rename orig_path into dest_dir using a safe filename derived from title.
 
     Ensures dest_dir exists. If a filename collision occurs, append a numeric suffix.
     Returns the new Path.
+
+    Args:
+        orig_path: Original file path to rename
+        title: Title to use for filename
+        dest_dir: Destination directory
+        extension: File extension without leading dot. If None, uses original file extension
+        max_length: Maximum filename length
+
+    Returns:
+        New file path after rename
     """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = make_safe_pdf_filename(title, max_length=max_length)
+    # Determine extension
+    if extension is None:
+        extension = orig_path.suffix.lstrip(".")
+
+    safe_name = make_safe_filename(title, extension=extension, max_length=max_length)
     target = dest_dir / safe_name
 
     # If target exists, append counter
@@ -184,3 +221,14 @@ def rename_pdf_file(orig_path: Path, title: str, dest_dir: Path, max_length: int
             orig_path.unlink()
 
     return target
+
+
+def rename_pdf_file(orig_path: Path, title: str, dest_dir: Path, max_length: int = 120) -> Path:
+    """Move/rename PDF file into dest_dir using a safe filename derived from title.
+
+    Ensures dest_dir exists. If a filename collision occurs, append a numeric suffix.
+    Returns the new Path.
+
+    This is a convenience wrapper around rename_file() for backwards compatibility.
+    """
+    return rename_file(orig_path, title, dest_dir, extension="pdf", max_length=max_length)

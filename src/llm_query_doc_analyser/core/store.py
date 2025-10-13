@@ -146,6 +146,21 @@ CREATE TABLE IF NOT EXISTS markdown_versions (
 );
 """
 
+CREATE_HTML_DOWNLOADS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS html_downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id INTEGER NOT NULL,
+    download_attempt_datetime TEXT NOT NULL,
+    url TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    html_local_path TEXT,
+    file_size_bytes INTEGER,
+    error_message TEXT,
+    FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE
+);
+"""
+
 CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_records_filterings_record_id ON records_filterings(record_id);",
     "CREATE INDEX IF NOT EXISTS idx_records_filterings_filtering_query_id ON records_filterings(filtering_query_id);",
@@ -153,6 +168,8 @@ CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pdf_resolutions_record_id ON pdf_resolutions(record_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_record_id ON pdf_downloads(record_id);",
     "CREATE INDEX IF NOT EXISTS idx_pdf_downloads_status ON pdf_downloads(status);",
+    "CREATE INDEX IF NOT EXISTS idx_html_downloads_record_id ON html_downloads(record_id);",
+    "CREATE INDEX IF NOT EXISTS idx_html_downloads_status ON html_downloads(status);",
     "CREATE INDEX IF NOT EXISTS idx_research_articles_is_preprint ON research_articles(is_preprint);",
     "CREATE INDEX IF NOT EXISTS idx_article_versions_preprint_id ON article_versions(preprint_id);",
     "CREATE INDEX IF NOT EXISTS idx_article_versions_published_id ON article_versions(published_id);",
@@ -414,6 +431,7 @@ def init_db() -> None:
         conn.execute(CREATE_PDF_DOWNLOADS_TABLE_SQL)
         conn.execute(CREATE_DOCX_VERSIONS_TABLE_SQL)
         conn.execute(CREATE_MARKDOWN_VERSIONS_TABLE_SQL)
+        conn.execute(CREATE_HTML_DOWNLOADS_TABLE_SQL)
         for index_sql in CREATE_INDEXES_SQL:
             conn.execute(index_sql)
         # Create the article versions view
@@ -1622,6 +1640,162 @@ def filter_already_downloaded_records(records: list[Record]) -> list[Record]:
     
     log.info(
         "filter_already_downloaded_records_completed",
+        total_checked=checked,
+        total_skipped=skipped,
+        total_needing_download=len(records_needing_download),
+    )
+    return records_needing_download
+
+
+def record_html_download_attempt(
+    record_id: int,
+    url: str,
+    source: str,
+    status: str,
+    download_attempt_datetime: str,
+    html_local_path: str | None = None,
+    file_size_bytes: int | None = None,
+    error_message: str | None = None,
+) -> int | None:
+    """
+    Record an HTML full-text download attempt.
+    
+    Args:
+        record_id: ID of the research article record
+        url: URL of the HTML page
+        source: Preprint source (arxiv, biorxiv, medrxiv, preprints)
+        status: Download status ('downloaded', 'error', 'no_url')
+        download_attempt_datetime: ISO datetime of download attempt
+        html_local_path: Local file path if downloaded
+        file_size_bytes: File size in bytes if downloaded
+        error_message: Error message if failed
+        
+    Returns:
+        ID of the inserted record or None if failed
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO html_downloads (
+                record_id,
+                download_attempt_datetime,
+                url,
+                source,
+                status,
+                html_local_path,
+                file_size_bytes,
+                error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                download_attempt_datetime,
+                url,
+                source,
+                status,
+                html_local_path,
+                file_size_bytes,
+                error_message,
+            ),
+        )
+        download_id = cur.lastrowid
+        log.debug(
+            "html_download_attempt_recorded",
+            record_id=record_id,
+            download_id=download_id,
+            status=status,
+            url=url,
+        )
+        return download_id
+
+
+def get_html_download_stats(filtering_query_id: int | None = None) -> dict[str, Any]:
+    """
+    Get HTML download statistics, optionally filtered by filtering query.
+    
+    Args:
+        filtering_query_id: Optional filtering query ID to scope stats
+        
+    Returns:
+        Dictionary with counts by status
+    """
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        
+        if filtering_query_id is not None:
+            # Get stats for specific filtering query
+            cursor.execute(
+                """
+                SELECT hd.status, COUNT(*) as count
+                FROM html_downloads hd
+                INNER JOIN records_filterings rf ON hd.record_id = rf.record_id
+                WHERE rf.filtering_query_id = ? AND rf.match_result = 1
+                GROUP BY hd.status
+                """,
+                (filtering_query_id,),
+            )
+        else:
+            # Get overall stats
+            cursor.execute(
+                """
+                SELECT status, COUNT(*) as count
+                FROM html_downloads
+                GROUP BY status
+                """
+            )
+        
+        rows = cursor.fetchall()
+        stats = {row[0]: row[1] for row in rows}
+        
+        log.debug("html_download_stats_retrieved", filtering_query_id=filtering_query_id, stats=stats)
+        return stats
+
+
+def filter_already_downloaded_html(records: list[Record]) -> list[Record]:
+    """
+    Filter records to exclude those already successfully downloaded as HTML.
+    Records with failed or no download attempts will NOT be skipped (they will be re-attempted).
+    
+    Args:
+        records: List of records to check
+        
+    Returns:
+        List of records that haven't been successfully downloaded yet
+    """
+    log.debug("filter_already_downloaded_html_start", total_input=len(records))
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        records_needing_download = []
+        checked = 0
+        skipped = 0
+        
+        for rec in records:
+            checked += 1
+            cursor.execute(
+                """
+                SELECT COUNT(*) 
+                FROM html_downloads 
+                WHERE record_id = ? AND status = 'downloaded'
+                """,
+                (rec.id,)
+            )
+            row = cursor.fetchone()
+            
+            if row and row[0] > 0:
+                # Record already has a successful download
+                skipped += 1
+                log.debug(
+                    "record_skipped_already_downloaded_html",
+                    record_id=rec.id,
+                    doi=rec.doi_norm,
+                )
+                continue
+            
+            records_needing_download.append(rec)
+    
+    log.info(
+        "filter_already_downloaded_html_completed",
         total_checked=checked,
         total_skipped=skipped,
         total_needing_download=len(records_needing_download),

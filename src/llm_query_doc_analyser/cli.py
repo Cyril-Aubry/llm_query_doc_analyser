@@ -35,7 +35,7 @@ from .core.store import (
 from .enrich.orchestrator import enrich_record, format_enrichment_report
 from .filter_rank.prompts import filter_records_with_llm
 from .io_.load import load_records
-from .pdfs.download import convert_docx_to_markdown_versions, download_pdf, get_docx_for_pdf
+from .pdfs.download import convert_docx_to_markdown_versions, convert_html_to_markdown_versions, download_pdf, get_docx_for_pdf
 from .pdfs.resolve import resolve_pdf_candidates
 from .utils.files import rename_pdf_file
 from .utils.http import RateLimiter
@@ -902,6 +902,7 @@ def htmls(
     error_count = 0
     no_url_count = 0
     timeout_count = 0
+    not_available_count = 0
 
     # Rate limiters for HTML downloads (source-specific politeness)
     # HTML pages are more resource-intensive to serve, so be more conservative
@@ -915,7 +916,7 @@ def htmls(
 
     # Process each record for download
     async def download_record_html(rec: Record) -> None:
-        nonlocal downloaded_count, error_count, no_url_count, timeout_count
+        nonlocal downloaded_count, error_count, no_url_count, timeout_count, not_available_count
 
         # Build full-text HTML URL
         url = build_fulltext_html_url(rec)
@@ -978,6 +979,18 @@ def htmls(
                 )
                 timeout_count += 1
                 log.warning("html_download_timeout", record_id=rec.id, url=url)
+            elif status == "not_available":
+                # HTML version not available (e.g., arXiv conversion failure)
+                record_html_download_attempt(
+                    record_id=rec.id,
+                    url=url,
+                    source=source,
+                    status="not_available",
+                    download_attempt_datetime=timestamp,
+                    error_message=result.get("error"),
+                )
+                not_available_count += 1
+                log.info("html_not_available", record_id=rec.id, url=url, reason=result.get("error"))
             else:
                 # Error status
                 record_html_download_attempt(
@@ -1040,6 +1053,7 @@ def htmls(
     typer.echo(f"  Already downloaded (skipped): {already_downloaded_count}")
     typer.echo(f"  Successfully downloaded (new): {downloaded_count}")
     typer.echo(f"  No URL: {no_url_count}")
+    typer.echo(f"  Not available (conversion failed): {not_available_count}")
     typer.echo(f"  Timeouts: {timeout_count}")
     typer.echo(f"  Errors: {error_count}")
     typer.echo(f"\nHTML files saved to: {dest}")
@@ -1310,6 +1324,7 @@ def _convert_docx_to_markdown_for_record(
         
         insert_markdown_version(
             record_id=record_id,
+            source_type="docx",
             docx_version_id=docx_version_id,
             variant="no_images",
             md_local_path=md_path_str,
@@ -1322,6 +1337,7 @@ def _convert_docx_to_markdown_for_record(
     else:
         insert_markdown_version(
             record_id=record_id,
+            source_type="docx",
             docx_version_id=docx_version_id,
             variant="no_images",
             md_local_path=None,
@@ -1339,6 +1355,7 @@ def _convert_docx_to_markdown_for_record(
         
         insert_markdown_version(
             record_id=record_id,
+            source_type="docx",
             docx_version_id=docx_version_id,
             variant="with_images",
             md_local_path=md_path_str,
@@ -1351,7 +1368,129 @@ def _convert_docx_to_markdown_for_record(
     else:
         insert_markdown_version(
             record_id=record_id,
+            source_type="docx",
             docx_version_id=docx_version_id,
+            variant="with_images",
+            md_local_path=None,
+            created_datetime=now,
+            file_size_bytes=None,
+            error_message="conversion_failed",
+        )
+        log.warning("markdown_with_images_failed", record_id=record_id)
+
+    return {
+        "success": no_images_success or with_images_success,
+        "no_images_success": no_images_success,
+        "with_images_success": with_images_success,
+        "no_images_path": no_images_path,
+        "with_images_path": with_images_path,
+        "error": None if (no_images_success or with_images_success) else "All conversions failed"
+    }
+
+
+def _convert_html_to_markdown_for_record(
+    record_id: int, 
+    html_path: Path, 
+    html_version_id: int | None = None
+) -> dict[str, Any]:
+    """Helper function to convert HTML to markdown versions and record them for a record.
+
+    Args:
+        record_id: ID of the record
+        html_path: Path to the HTML file
+        html_version_id: Optional ID of the html_downloads row
+
+    Returns:
+        Dictionary with:
+            - success: bool indicating if at least one conversion succeeded
+            - no_images_success: bool for no_images variant
+            - with_images_success: bool for with_images variant
+            - no_images_path: Path to no_images markdown if successful
+            - with_images_path: Path to with_images markdown if successful
+            - error: Error message if any
+    """
+    log.debug(
+        "convert_html_to_markdown_for_record_started",
+        record_id=record_id,
+        html_path=str(html_path),
+        html_version_id=html_version_id
+    )
+
+    # Check if HTML file exists
+    if not html_path.exists():
+        log.warning("html_file_not_found", record_id=record_id, html_path=str(html_path))
+        return {
+            "success": False,
+            "no_images_success": False,
+            "with_images_success": False,
+            "no_images_path": None,
+            "with_images_path": None,
+            "error": f"HTML file not found: {html_path}"
+        }
+
+    # Convert to markdown versions
+    now = datetime.now(UTC).isoformat()
+    conv = convert_html_to_markdown_versions(html_path)
+
+    no_images_success = False
+    with_images_success = False
+    no_images_path = None
+    with_images_path = None
+
+    # Handle no_images variant
+    if conv.get("md_no_images"):
+        md_path_str = conv.get("md_no_images")
+        md_path = Path(md_path_str) if md_path_str else None
+        file_size_bytes = md_path.stat().st_size if md_path and md_path.exists() else None
+        
+        insert_markdown_version(
+            record_id=record_id,
+            source_type="html",
+            html_version_id=html_version_id,
+            variant="no_images",
+            md_local_path=md_path_str,
+            created_datetime=now,
+            file_size_bytes=file_size_bytes,
+        )
+        no_images_success = True
+        no_images_path = md_path_str
+        log.info("markdown_no_images_created", record_id=record_id, path=no_images_path, file_size_bytes=file_size_bytes)
+    else:
+        insert_markdown_version(
+            record_id=record_id,
+            source_type="html",
+            html_version_id=html_version_id,
+            variant="no_images",
+            md_local_path=None,
+            created_datetime=now,
+            file_size_bytes=None,
+            error_message="conversion_failed",
+        )
+        log.warning("markdown_no_images_failed", record_id=record_id)
+
+    # Handle with_images variant
+    if conv.get("md_with_images"):
+        md_path_str = conv.get("md_with_images")
+        md_path = Path(md_path_str) if md_path_str else None
+        file_size_bytes = md_path.stat().st_size if md_path and md_path.exists() else None
+        
+        insert_markdown_version(
+            record_id=record_id,
+            source_type="html",
+            html_version_id=html_version_id,
+            variant="with_images",
+            md_local_path=md_path_str,
+            created_datetime=now,
+            file_size_bytes=file_size_bytes,
+        )
+        with_images_success = True
+        with_images_path = md_path_str
+        log.info("markdown_with_images_created", record_id=record_id, path=with_images_path, file_size_bytes=file_size_bytes)
+    else:
+        insert_markdown_version(
+            record_id=record_id,
+            source_type="html",
+            html_version_id=html_version_id,
             variant="with_images",
             md_local_path=None,
             created_datetime=now,
@@ -1533,6 +1672,199 @@ def batch_docx_to_markdown() -> None:
 
     log.info(
         "batch_docx_to_markdown_completed",
+        total_records=len(rows),
+        full_success_count=full_success_count,
+        partial_success_count=partial_success_count,
+        failed_count=failed_count,
+        error_count=error_count,
+    )
+
+
+@app.command()
+def html_to_markdown(
+    html_download_id: int | None = None,
+    html_path: Path | None = None,
+    record_id: int | None = None,
+) -> None:
+    """Convert HTML to markdown versions (no_images and with_images variants).
+
+    This command will:
+    - Take an html_download_id, html_path, or record_id
+    - Convert the HTML to two markdown variants
+    - Insert records into markdown_versions table
+    """
+    log.info(
+        "html_to_markdown_started", 
+        html_download_id=html_download_id, 
+        html_path=str(html_path) if html_path else None,
+        record_id=record_id
+    )
+
+    if html_download_id is None and html_path is None and record_id is None:
+        typer.echo("Error: Must provide one of --html-download-id, --html-path, or --record-id")
+        raise typer.Exit(1)
+
+    # Initialize database
+    init_db()
+
+    # If html_download_id is provided, fetch html_path and record_id from database
+    if html_download_id is not None:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT record_id, html_local_path FROM html_downloads WHERE id = ? AND status = 'downloaded'",
+                (html_download_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                typer.echo(f"Error: No successful HTML download found with id {html_download_id}")
+                raise typer.Exit(1)
+            record_id, html_path_str = row
+            html_path = Path(html_path_str) if html_path_str else None
+
+    # If only record_id is provided, fetch latest successful HTML download
+    elif record_id is not None and html_path is None:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, html_local_path FROM html_downloads WHERE record_id = ? AND status = 'downloaded' ORDER BY download_attempt_datetime DESC LIMIT 1",
+                (record_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                typer.echo(f"Error: No successful HTML download found for record {record_id}")
+                raise typer.Exit(1)
+            html_download_id, html_path_str = row
+            html_path = Path(html_path_str) if html_path_str else None
+
+    # If only html_path is provided, we need to find the record_id and html_download_id
+    elif html_path is not None and record_id is None:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, record_id FROM html_downloads WHERE html_local_path = ? AND status = 'downloaded'",
+                (str(html_path),)
+            )
+            row = cur.fetchone()
+            if row is None:
+                typer.echo(f"Error: No successful HTML download found with path {html_path}")
+                raise typer.Exit(1)
+            html_download_id, record_id = row
+
+    # At this point record_id, html_path, and html_download_id should all be set
+    assert record_id is not None, "record_id must be set"
+    assert html_path is not None, "html_path must be set"
+
+    result = _convert_html_to_markdown_for_record(record_id, html_path, html_download_id)
+
+    if result["success"]:
+        typer.echo(f"✓ Successfully converted HTML to markdown for record {record_id}")
+        if result["no_images_path"]:
+            typer.echo(f"  No images variant: {result['no_images_path']}")
+        if result["with_images_path"]:
+            typer.echo(f"  With images variant: {result['with_images_path']}")
+    else:
+        typer.echo(f"✗ Failed to convert HTML to markdown for record {record_id}: {result['error']}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def batch_html_to_markdown() -> None:
+    """Batch convert HTML to markdown versions for all records with HTML but missing markdown versions.
+
+    This command will:
+    - Query html_downloads for records with downloaded HTML but missing markdown variants
+    - Attempt to convert each HTML to both markdown versions (no_images and with_images)
+    - Display summary statistics
+    """
+    log.info("batch_html_to_markdown_started")
+    init_db()
+
+    typer.echo("\nFetching records with HTML but missing markdown variants...")
+
+    # Query for records with HTML downloads but missing markdown variants
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT hd.id, hd.record_id, hd.html_local_path
+            FROM html_downloads hd
+            WHERE hd.status = 'downloaded'
+            AND hd.html_local_path IS NOT NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM markdown_versions mv
+                WHERE mv.record_id = hd.record_id
+                AND mv.html_version_id = hd.id
+                AND mv.source_type = 'html'
+                AND mv.variant = 'no_images'
+                AND mv.md_local_path IS NOT NULL
+            )
+            OR NOT EXISTS (
+                SELECT 1 FROM markdown_versions mv
+                WHERE mv.record_id = hd.record_id
+                AND mv.html_version_id = hd.id
+                AND mv.source_type = 'html'
+                AND mv.variant = 'with_images'
+                AND mv.md_local_path IS NOT NULL
+            )
+            ORDER BY hd.record_id
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        typer.echo("No records found with HTML but missing markdown variants.")
+        log.info("batch_html_to_markdown_no_records")
+        return
+
+    typer.echo(f"Found {len(rows)} records to process.\n")
+
+    # Process each record
+    full_success_count = 0  # Both variants succeeded
+    partial_success_count = 0  # At least one variant succeeded
+    failed_count = 0  # All conversions failed
+    error_count = 0  # Errors occurred
+
+    for html_download_id, record_id, html_local_path in rows:
+        html_path = Path(html_local_path) if html_local_path else None
+        
+        if html_path is None:
+            error_count += 1
+            typer.echo(f"⚠ Record {record_id}: No HTML path available")
+            continue
+
+        result = _convert_html_to_markdown_for_record(record_id, html_path, html_download_id)
+
+        if result["success"]:
+            if result["no_images_success"] and result["with_images_success"]:
+                full_success_count += 1
+                typer.echo(f"✓ Record {record_id}: Both markdown variants created")
+            else:
+                partial_success_count += 1
+                variants = []
+                if result["no_images_success"]:
+                    variants.append("no_images")
+                if result["with_images_success"]:
+                    variants.append("with_images")
+                typer.echo(f"◐ Record {record_id}: Partial success ({', '.join(variants)})")
+        elif result["error"] and "not found" in result["error"].lower():
+            error_count += 1
+            typer.echo(f"⚠ Record {record_id}: {result['error']}")
+        else:
+            failed_count += 1
+            typer.echo(f"✗ Record {record_id}: All conversions failed")
+
+    # Display summary
+    typer.echo("\n" + "=" * 80)
+    typer.echo("BATCH HTML TO MARKDOWN CONVERSION SUMMARY")
+    typer.echo("=" * 80)
+    typer.echo(f"Total records processed: {len(rows)}")
+    typer.echo(f"  Full success (both variants): {full_success_count}")
+    typer.echo(f"  Partial success (one variant): {partial_success_count}")
+    typer.echo(f"  Failed (no variants): {failed_count}")
+    typer.echo(f"  Errors: {error_count}")
+    typer.echo(f"\nResults stored in database: {get_config().db_path}")
+
+    log.info(
+        "batch_html_to_markdown_completed",
         total_records=len(rows),
         full_success_count=full_success_count,
         partial_success_count=partial_success_count,

@@ -19,7 +19,8 @@ _DEFAULT_PRODUCTION_PATHS = {
     "db_path": Path("data/cache/research_articles_management.db"),
     "pdf_dir": Path("data/pdfs"),
     "docx_dir": Path("data/docx"),
-    "markdown_dir": Path("data/markdown"),
+    "markdown_from_docx_dir": Path("data/markdown/from_docx"),
+    "markdown_from_html_dir": Path("data/markdown/from_html"),
     "html_dir": Path("data/html"),
     "cache_dir": Path("data/cache"),
 }
@@ -29,7 +30,8 @@ _DEFAULT_TEST_PATHS = {
     "db_path": Path("test_data/cache/test_research_articles.db"),
     "pdf_dir": Path("test_data/pdfs"),
     "docx_dir": Path("test_data/docx"),
-    "markdown_dir": Path("test_data/markdown"),
+    "markdown_from_docx_dir": Path("test_data/markdown/from_docx"),
+    "markdown_from_html_dir": Path("test_data/markdown/from_html"),
     "html_dir": Path("test_data/html"),
     "cache_dir": Path("test_data/cache"),
 }
@@ -81,9 +83,14 @@ class EnvironmentConfig:
         return self._paths["docx_dir"]
     
     @property
-    def markdown_dir(self) -> Path:
-        """Get Markdown storage directory."""
-        return self._paths["markdown_dir"]
+    def markdown_from_docx_dir(self) -> Path:
+        """Get Markdown storage directory for DOCX conversions."""
+        return self._paths["markdown_from_docx_dir"]
+    
+    @property
+    def markdown_from_html_dir(self) -> Path:
+        """Get Markdown storage directory for HTML conversions."""
+        return self._paths["markdown_from_html_dir"]
     
     @property
     def html_dir(self) -> Path:

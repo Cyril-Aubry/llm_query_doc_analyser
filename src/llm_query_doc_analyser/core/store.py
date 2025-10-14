@@ -136,13 +136,20 @@ CREATE TABLE IF NOT EXISTS markdown_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     record_id INTEGER NOT NULL,
     docx_version_id INTEGER,
+    html_version_id INTEGER,
+    source_type TEXT NOT NULL,
     created_datetime TEXT NOT NULL,
     variant TEXT NOT NULL,
     md_local_path TEXT,
     file_size_bytes INTEGER,
     error_message TEXT,
     FOREIGN KEY (record_id) REFERENCES research_articles(id) ON DELETE CASCADE,
-    FOREIGN KEY (docx_version_id) REFERENCES docx_versions(id) ON DELETE SET NULL
+    FOREIGN KEY (docx_version_id) REFERENCES docx_versions(id) ON DELETE SET NULL,
+    FOREIGN KEY (html_version_id) REFERENCES html_downloads(id) ON DELETE SET NULL,
+    CHECK (
+        (source_type = 'docx' AND docx_version_id IS NOT NULL AND html_version_id IS NULL) OR
+        (source_type = 'html' AND html_version_id IS NOT NULL AND docx_version_id IS NULL)
+    )
 );
 """
 
@@ -317,6 +324,18 @@ def _migrate_add_file_size_columns() -> None:
         if "file_size_bytes" not in markdown_columns:
             log.info("adding_file_size_bytes_to_markdown_versions")
             cur.execute("ALTER TABLE markdown_versions ADD COLUMN file_size_bytes INTEGER")
+            conn.commit()
+        
+        # Check and add html_version_id to markdown_versions table
+        if "html_version_id" not in markdown_columns:
+            log.info("adding_html_version_id_to_markdown_versions")
+            cur.execute("ALTER TABLE markdown_versions ADD COLUMN html_version_id INTEGER REFERENCES html_downloads(id) ON DELETE SET NULL")
+            conn.commit()
+        
+        # Check and add source_type to markdown_versions table
+        if "source_type" not in markdown_columns:
+            log.info("adding_source_type_to_markdown_versions")
+            cur.execute("ALTER TABLE markdown_versions ADD COLUMN source_type TEXT NOT NULL DEFAULT 'docx'")
             conn.commit()
     
     log.info("file_size_migration_completed")
@@ -1300,21 +1319,25 @@ def insert_docx_version(
 
 def insert_markdown_version(
     record_id: int,
-    docx_version_id: int | None,
+    source_type: str,
     variant: str,
     md_local_path: str | None,
     created_datetime: str,
+    docx_version_id: int | None = None,
+    html_version_id: int | None = None,
     file_size_bytes: int | None = None,
     error_message: str | None = None,
 ) -> int | None:
-    """Insert a markdown version entry tied to a record and optional docx_version.
+    """Insert a markdown version entry tied to a record and optional source version.
     
     Args:
         record_id: ID of the record
-        docx_version_id: ID of the source DOCX version (if applicable)
+        source_type: Source type ('docx' or 'html')
         variant: Markdown variant ('no_images' or 'with_images')
         md_local_path: Path to the markdown file
         created_datetime: ISO format timestamp of creation
+        docx_version_id: ID of the source DOCX version (if source_type is 'docx')
+        html_version_id: ID of the source HTML download (if source_type is 'html')
         file_size_bytes: Size of the markdown file in bytes
         error_message: Error message if conversion failed
         
@@ -1325,16 +1348,17 @@ def insert_markdown_version(
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO markdown_versions (record_id, docx_version_id, created_datetime, variant, md_local_path, file_size_bytes, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO markdown_versions (record_id, source_type, docx_version_id, html_version_id, created_datetime, variant, md_local_path, file_size_bytes, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (record_id, docx_version_id, created_datetime, variant, md_local_path, file_size_bytes, error_message),
+            (record_id, source_type, docx_version_id, html_version_id, created_datetime, variant, md_local_path, file_size_bytes, error_message),
         )
         conn.commit()
         log.debug(
             "markdown_version_inserted",
             markdown_id=cur.lastrowid,
             record_id=record_id,
+            source_type=source_type,
             variant=variant,
             file_size_bytes=file_size_bytes,
         )

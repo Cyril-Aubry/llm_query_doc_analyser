@@ -17,19 +17,20 @@ log = get_logger(__name__)
 
 MAX_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
 
-# Legacy constants for backward compatibility - use get_config() instead
-DOCX_DIR = Path("data/docx")
-MD_OUTPUT_DIR = Path("data/markdown")
-
 
 def _get_docx_dir() -> Path:
     """Get current DOCX directory from configuration."""
     return get_config().docx_dir
 
 
-def _get_markdown_dir() -> Path:
-    """Get current Markdown directory from configuration."""
-    return get_config().markdown_dir
+def _get_markdown_from_docx_dir() -> Path:
+    """Get current Markdown directory for DOCX conversions from configuration."""
+    return get_config().markdown_from_docx_dir
+
+
+def _get_markdown_from_html_dir() -> Path:
+    """Get current Markdown directory for HTML conversions from configuration."""
+    return get_config().markdown_from_html_dir
 
 
 def _get_pdf_headers(url: str, source: str | None = None) -> dict[str, str]:
@@ -224,10 +225,7 @@ def convert_docx_to_markdown_versions(docx_path: Path, output_dir: Path | None =
     Returns dict with keys: docx, md_no_images, md_with_images and values as string paths or None on failure.
     """
     # Use configured markdown directory if not specified
-    if output_dir is None:
-        output_dir = _get_markdown_dir()
-    else:
-        output_dir = Path(output_dir)
+    output_dir = _get_markdown_from_docx_dir() if output_dir is None else Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_name = docx_path.stem
@@ -280,5 +278,143 @@ def convert_docx_to_markdown_versions(docx_path: Path, output_dir: Path | None =
         log.error("pandoc_with_images_timeout", docx=str(docx_path), error=str(e))
     except Exception as e:
         log.exception("pandoc_with_images_exception", docx=str(docx_path), error=str(e))
+
+    return results
+
+
+def _strip_images_from_html(html_path: Path) -> Path | None:
+    """Create a temporary HTML file with all image tags removed.
+    
+    This function removes:
+    - <img> tags (including those with base64 embedded images)
+    - <picture> tags and their contents
+    - <svg> tags and their contents
+    
+    Args:
+        html_path: Path to the original HTML file
+        
+    Returns:
+        Path to temporary HTML file without images, or None on error
+    """
+    import re
+    import tempfile
+    
+    try:
+        # Read the HTML content
+        html_content = html_path.read_text(encoding='utf-8')
+        
+        # Remove image tags with various patterns
+        # 1. Remove <img> tags (with any attributes including base64 src)
+        html_content = re.sub(r'<img[^>]*>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+        
+        # 2. Remove <picture> tags and their contents
+        html_content = re.sub(r'<picture[^>]*>.*?</picture>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+        
+        # 3. Remove <svg> tags and their contents
+        html_content = re.sub(r'<svg[^>]*>.*?</svg>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+        
+        # 4. Remove figure tags that might contain images (but keep figcaption text)
+        # Replace <figure>...</figure> with just the text content (captions)
+        html_content = re.sub(
+            r'<figure[^>]*>(.*?)</figure>',
+            lambda m: re.sub(r'<img[^>]*>', '', m.group(1), flags=re.IGNORECASE),
+            html_content,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        
+        # Create a temporary file with the stripped HTML
+        import os
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.html', prefix='no_images_')
+        os.close(temp_fd)  # Close the file descriptor as we'll use Path.write_text
+        temp_file = Path(temp_path)
+        
+        # Write the modified HTML content
+        temp_file.write_text(html_content, encoding='utf-8')
+        
+        log.debug("html_images_stripped", original=str(html_path), temp=str(temp_file))
+        return temp_file
+        
+    except Exception as e:
+        log.exception("html_strip_images_failed", html=str(html_path), error=str(e))
+        return None
+
+
+def convert_html_to_markdown_versions(html_path: Path, output_dir: Path | None = None) -> dict[str, str | None]:
+    """Create two markdown versions from an HTML file using pandoc.
+
+    - No-images md: Strip images from HTML, then convert with pandoc
+    - With-images md: Convert HTML directly with pandoc (images already embedded as base64)
+
+    Returns dict with keys: html, md_no_images, md_with_images and values as string paths or None on failure.
+    """
+    # Use configured markdown directory if not specified
+    output_dir = _get_markdown_from_html_dir() if output_dir is None else Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = html_path.stem
+    md_no_images = output_dir / f"{base_name}-no images.md"
+    md_with_images = output_dir / f"{base_name}.md"
+
+    results: dict[str, str | None] = {
+        "html": str(html_path),
+        "md_no_images": None,
+        "md_with_images": None,
+    }
+
+    # 1) No images conversion - strip images from HTML first, then convert
+    temp_html_no_images = None
+    try:
+        # Create temporary HTML file without images
+        temp_html_no_images = _strip_images_from_html(html_path)
+        
+        if temp_html_no_images and temp_html_no_images.exists():
+            cmd1 = ["pandoc", "-s", "-t", "markdown_strict", str(temp_html_no_images), "-o", str(md_no_images)]
+            log.debug("pandoc_html_cmd_no_images", cmd=cmd1)
+            proc1 = subprocess.run(cmd1, capture_output=True, text=True, timeout=120)
+            if proc1.returncode == 0 and md_no_images.exists():
+                results["md_no_images"] = str(md_no_images)
+                log.info("pandoc_html_no_images_success", html=str(html_path), out=str(md_no_images))
+            else:
+                log.error(
+                    "pandoc_html_no_images_failed",
+                    html=str(html_path),
+                    rc=proc1.returncode,
+                    stderr=proc1.stderr,
+                )
+        else:
+            log.error("html_strip_images_failed_no_temp", html=str(html_path))
+            
+    except subprocess.TimeoutExpired as e:
+        log.error("pandoc_html_no_images_timeout", html=str(html_path), error=str(e))
+    except Exception as e:
+        log.exception("pandoc_html_no_images_exception", html=str(html_path), error=str(e))
+    finally:
+        # Clean up temporary file
+        if temp_html_no_images and temp_html_no_images.exists():
+            try:
+                temp_html_no_images.unlink()
+                log.debug("temp_html_cleaned", path=str(temp_html_no_images))
+            except Exception as e:
+                log.warning("temp_html_cleanup_failed", path=str(temp_html_no_images), error=str(e))
+
+    # 2) With images conversion - HTML already has embedded images as base64
+    try:
+        cmd_with_images = ["pandoc", "-s", "-t", "markdown_strict", str(html_path), "-o", str(md_with_images)]
+        log.debug("pandoc_html_cmd_with_images", cmd=cmd_with_images)
+        proc = subprocess.run(cmd_with_images, capture_output=True, text=True, timeout=240)
+        if proc.returncode == 0 and md_with_images.exists():
+            results["md_with_images"] = str(md_with_images)
+            log.info("pandoc_html_with_images_success", html=str(html_path), out=str(md_with_images))
+        else:
+            log.error(
+                "pandoc_html_with_images_failed",
+                html=str(html_path),
+                rc=proc.returncode,
+                stderr=proc.stderr,
+            )
+    except subprocess.TimeoutExpired as e:
+        log.error("pandoc_html_with_images_timeout", html=str(html_path), error=str(e))
+    except Exception as e:
+        log.exception("pandoc_html_with_images_exception", html=str(html_path), error=str(e))
 
     return results
